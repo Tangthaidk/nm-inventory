@@ -955,6 +955,7 @@ function openItemModal(id){
 
   const editSectionsHtml = readOnly ? '' : `
     <div class="action-grid">
+      <button class="btn btn-outline small" id="editDetailsBtn">Edit details</button>
       ${item.status!=='sold' ? '<button class="btn btn-rust small" id="markSoldBtn">Mark sold</button>' : '<button class="btn btn-sage small" id="markAvailBtn">Mark available</button>'}
       ${item.status==='available' ? '<button class="btn btn-outline small" id="markReservedBtn">Mark reserved</button>' : ''}
       <button class="btn btn-brass small" id="printTagBtn">Print QR tag</button>
@@ -994,6 +995,7 @@ function openItemModal(id){
   document.getElementById('moveBtn').addEventListener('click', ()=>moveItem(item.id));
   document.getElementById('printTagBtn').addEventListener('click', ()=>openLabelModal(item));
   document.getElementById('deleteItemBtn').addEventListener('click', ()=>deleteItem(item.id));
+  document.getElementById('editDetailsBtn').addEventListener('click', ()=>openItemEditForm(item.id));
 
   const modalTagInput = document.getElementById('modalTagInput');
   modalTagInput.addEventListener('keydown', e=>{
@@ -1010,6 +1012,72 @@ function openItemModal(id){
       removeTagFromItem(item.id, i);
     });
   });
+}
+
+function openItemEditForm(id){
+  if(!state.isStaff) return;
+  const item = findItem(id);
+  if(!item) return;
+
+  document.getElementById('modalTitleRow').innerHTML = `
+    <span class="serif" style="font-size:19px;font-weight:600;">Edit piece</span>
+    <span class="id-tag">${esc(item.id)}</span>
+  `;
+
+  document.getElementById('modalBody').innerHTML = `
+    <div class="field">
+      <label>Name</label>
+      <input type="text" id="e-name" value="${esc(item.name)}">
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label>Category</label>
+        <input type="text" id="e-category" value="${esc(item.category)}">
+      </div>
+      <div class="field">
+        <label>Price</label>
+        <input type="number" id="e-price" step="0.01" min="0" value="${esc(item.price)}">
+      </div>
+    </div>
+    <div class="field">
+      <label>Description</label>
+      <textarea id="e-desc">${esc(item.description)}</textarea>
+    </div>
+    <div class="action-grid">
+      <button class="btn btn-primary small" id="saveEditBtn">Save changes</button>
+      <button class="btn btn-outline small" id="cancelEditBtn">Cancel</button>
+    </div>
+  `;
+
+  document.getElementById('saveEditBtn').addEventListener('click', ()=>saveItemEdit(id));
+  document.getElementById('cancelEditBtn').addEventListener('click', ()=>openItemModal(id));
+}
+
+async function saveItemEdit(id){
+  if(!state.isStaff) return;
+  const item = findItem(id);
+  if(!item) return;
+
+  const newName = document.getElementById('e-name').value.trim();
+  if(!newName){ toast('Name cannot be empty'); return; }
+
+  const btn = document.getElementById('saveEditBtn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+
+  const oldSummary = `${item.name} — ${money(item.price)}`;
+  item.name = newName;
+  item.category = document.getElementById('e-category').value.trim();
+  item.price = document.getElementById('e-price').value;
+  item.description = document.getElementById('e-desc').value.trim();
+  item.history = item.history || [];
+  item.history.push({ts: Date.now(), text: `Details edited (was: ${oldSummary})`});
+
+  const ok = await sSet('item:'+id, JSON.stringify(item), true);
+  if(!ok){ toast('Could not save changes'); btn.disabled=false; btn.textContent='Save changes'; return; }
+
+  await loadItems();
+  toast('Details updated');
+  openItemModal(id);
 }
 
 async function addTagToItem(id, tag){
