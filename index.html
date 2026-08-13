@@ -301,7 +301,7 @@
   @media print{
     body *{visibility:hidden;}
     #print-area, #print-area *{visibility:visible;}
-    #print-area{position:absolute;top:0;left:0;width:100%;}
+    #print-area{display:block !important;position:absolute;top:0;left:0;width:100%;}
   }
   #print-area{display:none;}
   .print-labels{display:flex;flex-wrap:wrap;gap:10px;padding:16px;}
