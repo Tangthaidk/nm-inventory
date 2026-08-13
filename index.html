@@ -873,7 +873,21 @@ document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
 /* ---------------- Item modal ---------------- */
 function findItem(id){ return state.items.find(i=>i.id===id); }
 
-function openItemModal(id){
+function itemUrl(id){
+  const base = window.location.href.split('?')[0].split('#')[0];
+  return base + '?item=' + encodeURIComponent(id);
+}
+function extractItemId(data){
+  try{
+    const url = new URL(data);
+    const fromParam = url.searchParams.get('item');
+    if(fromParam) return fromParam;
+  }catch(e){ /* not a URL, fall through */ }
+  if(data.startsWith('PROVQR:')) return data.slice(7);
+  return data;
+}
+
+function openItemModal(id, readOnly){
   const item = findItem(id);
   if(!item){ toast('Item not found: '+id); return; }
   state.currentItemId = id;
@@ -894,17 +908,16 @@ function openItemModal(id){
     <div class="history-item"><b>${new Date(h.ts).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</b> — ${esc(h.text)}</div>
   `).join('') || '<div class="history-item">No history yet.</div>';
 
-  document.getElementById('modalBody').innerHTML = `
-    <div class="modal-photos">${photosHtml}</div>
-    <div class="card-price" style="font-size:17px;">${money(item.price)}</div>
-    <div class="desc">${esc(item.description) || 'No description added.'}</div>
-    <div class="loc-label" style="font-size:12.5px;">Category: ${esc(item.category)||'—'} &nbsp;·&nbsp; Location: ${esc(item.location)}</div>
+  const tagsSectionHtml = readOnly
+    ? ((item.tags && item.tags.length)
+        ? `<div class="tag-chips" style="margin:12px 0;">${item.tags.map(t=>`<span class="tag-chip">${esc(t)}</span>`).join('')}</div>`
+        : '')
+    : `<div class="tag-input-wrap" id="modalTagWrap" style="margin:12px 0;">
+        ${(item.tags||[]).map((t,i)=>`<span class="tag-chip removable" data-tag-i="${i}">${esc(t)} <button type="button" data-rm-tag="${i}">&times;</button></span>`).join('')}
+        <input type="text" id="modalTagInput" placeholder="Add a tag…">
+      </div>`;
 
-    <div class="tag-input-wrap" id="modalTagWrap" style="margin:12px 0;">
-      ${(item.tags||[]).map((t,i)=>`<span class="tag-chip removable" data-tag-i="${i}">${esc(t)} <button type="button" data-rm-tag="${i}">&times;</button></span>`).join('')}
-      <input type="text" id="modalTagInput" placeholder="Add a tag…">
-    </div>
-
+  const editSectionsHtml = readOnly ? '' : `
     <div class="action-grid">
       ${item.status!=='sold' ? '<button class="btn btn-rust small" id="markSoldBtn">Mark sold</button>' : '<button class="btn btn-sage small" id="markAvailBtn">Mark available</button>'}
       ${item.status==='available' ? '<button class="btn btn-outline small" id="markReservedBtn">Mark reserved</button>' : ''}
@@ -923,7 +936,18 @@ function openItemModal(id){
     </div>
   `;
 
+  document.getElementById('modalBody').innerHTML = `
+    <div class="modal-photos">${photosHtml}</div>
+    <div class="card-price" style="font-size:17px;">${money(item.price)}</div>
+    <div class="desc">${esc(item.description) || 'No description added.'}</div>
+    <div class="loc-label" style="font-size:12.5px;">Category: ${esc(item.category)||'—'} &nbsp;·&nbsp; Location: ${esc(item.location)}</div>
+    ${tagsSectionHtml}
+    ${editSectionsHtml}
+  `;
+
   document.getElementById('itemOverlay').classList.add('active');
+
+  if(readOnly) return;
 
   const soldBtn = document.getElementById('markSoldBtn');
   if(soldBtn) soldBtn.addEventListener('click', ()=>updateStatus(item.id,'sold'));
@@ -1024,7 +1048,7 @@ function openLabelModal(item){
       <div class="lid">${esc(item.id)}</div>
     </div>`;
   new QRCode(document.getElementById('qrHolder'), {
-    text: 'PROVQR:'+item.id,
+    text: itemUrl(item.id),
     width: 130, height: 130,
     colorDark:'#2A2622', colorLight:'#ffffff'
   });
@@ -1039,21 +1063,52 @@ document.getElementById('labelOverlay').addEventListener('click', e=>{
 });
 
 function printLabel(item){
-  const area = document.getElementById('printLabels');
+  // Render the QR into an offscreen holder already attached to the DOM
+  // (some browsers won't reliably rasterize a canvas that was never attached).
   const qrTemp = document.createElement('div');
-  new QRCode(qrTemp, {text:'PROVQR:'+item.id, width:120, height:120});
+  qrTemp.style.cssText = 'position:fixed;left:-9999px;top:-9999px;';
+  document.body.appendChild(qrTemp);
+  new QRCode(qrTemp, {text: itemUrl(item.id), width:160, height:160, colorDark:'#2A2622', colorLight:'#ffffff'});
+
   setTimeout(()=>{
-    const img = qrTemp.querySelector('img') || qrTemp.querySelector('canvas');
-    const src = img.tagName==='IMG' ? img.src : img.toDataURL();
-    area.innerHTML = `
-      <div class="print-label">
-        <img src="${src}">
-        <div class="pn">${esc(item.name)}</div>
-        <div class="pp">${money(item.price)}</div>
-        <div class="pid">${esc(item.id)}</div>
-      </div>`;
-    window.print();
-  }, 120);
+    const el = qrTemp.querySelector('img') || qrTemp.querySelector('canvas');
+    const src = el.tagName==='IMG' ? el.src : el.toDataURL('image/png');
+    document.body.removeChild(qrTemp);
+
+    // Print via a dedicated window rather than hiding/showing parts of the
+    // main page — far more reliable across browsers, especially iOS Safari.
+    const printWin = window.open('', '_blank', 'width=400,height=500');
+    if(!printWin){
+      toast('Please allow pop-ups to print the label');
+      return;
+    }
+    printWin.document.write(`
+      <!DOCTYPE html><html><head><meta charset="UTF-8"><title>${esc(item.id)} label</title>
+      <style>
+        @page{ margin:0.25in; }
+        body{ margin:0; font-family:'Fraunces',Georgia,serif; display:flex; align-items:center; justify-content:center; }
+        .label{ width:2.5in; height:1.7in; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:4px; padding:8px; box-sizing:border-box; border:1px dashed #999; border-radius:6px; }
+        .label img{ width:90px; height:90px; }
+        .pn{ font-weight:600; font-size:12px; text-align:center; }
+        .pp{ font-family:'IBM Plex Mono',monospace; font-size:11px; }
+        .pid{ font-family:'IBM Plex Mono',monospace; font-size:9px; color:#666; }
+      </style></head>
+      <body>
+        <div class="label">
+          <img src="${src}">
+          <div class="pn">${esc(item.name)}</div>
+          <div class="pp">${money(item.price)}</div>
+          <div class="pid">${esc(item.id)}</div>
+        </div>
+        <script>
+          window.onload = function(){
+            setTimeout(function(){ window.print(); }, 200);
+          };
+        <\/script>
+      </body></html>
+    `);
+    printWin.document.close();
+  }, 150);
 }
 
 /* ---------------- Locations ---------------- */
@@ -1151,8 +1206,7 @@ function tickScan(){
 }
 
 function handleScanResult(data){
-  let id = data;
-  if(data.startsWith('PROVQR:')) id = data.slice(7);
+  const id = extractItemId(data);
   scanStatus.textContent = 'Found: ' + id;
   const item = findItem(id);
   if(item){
@@ -1180,6 +1234,18 @@ function doManualLookup(){
   populateLocationSelects();
   await loadItems();
   renderLocations();
+
+  // If this page was opened from a scanned tag (?item=ID), jump straight
+  // to that item in a read-only view — no edit buttons for random scanners.
+  const params = new URLSearchParams(window.location.search);
+  const linkedId = params.get('item');
+  if(linkedId){
+    if(findItem(linkedId)){
+      openItemModal(linkedId, true);
+    } else {
+      toast('No item found for ' + linkedId);
+    }
+  }
 })();
 
 })();
