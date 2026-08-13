@@ -1,0 +1,1188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Nicolo & Melissa — Antique Inventory</title>
+
+<!-- iPhone "Add to Home Screen" app behavior -->
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Nicolo & Melissa">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="theme-color" content="#20262E">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+
+<!-- Firebase (free tier) — powers the shared, cross-device storage -->
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-auth-compat.js"></script>
+<style>
+  :root{
+    --bg:#EDE6D6;
+    --surface:#F7F3E8;
+    --surface-2:#FBF9F2;
+    --ink:#2A2622;
+    --ink-soft:#6B6255;
+    --forest:#20262E;
+    --forest-2:#2C343D;
+    --brass:#C6A05C;
+    --brass-deep:#A17F3E;
+    --rust:#A64B3A;
+    --sage:#6E7F5C;
+    --line:#D9CFB8;
+    --line-strong:#C4B896;
+    --shadow: 0 1px 2px rgba(42,38,34,0.06), 0 4px 14px rgba(42,38,34,0.07);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg);
+    color:var(--ink);
+    font-family:'Inter',sans-serif;
+    -webkit-font-smoothing:antialiased;
+    min-height:100vh;
+  }
+  .mono{font-family:'IBM Plex Mono',monospace;}
+  .serif{font-family:'Fraunces',serif;}
+
+  /* ---------- App shell ---------- */
+  #app{max-width:1180px;margin:0 auto;padding:0 20px 80px;}
+
+  header.topbar{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:22px 4px 18px;
+    border-bottom:1px solid var(--line-strong);
+    margin-bottom:22px;
+    flex-wrap:wrap;
+    gap:14px;
+  }
+  .brand{display:flex;align-items:center;gap:12px;}
+  .brand-mark{
+    width:42px;height:42px;border-radius:3px;
+    background:var(--forest);
+    display:flex;align-items:center;justify-content:center;
+    position:relative;
+    flex-shrink:0;
+    border:1px solid var(--brass-deep);
+  }
+  .brand-mark::before, .brand-mark::after{
+    content:'';
+    position:absolute;
+    width:5px;height:5px;
+    border:1px solid var(--brass);
+    opacity:0.55;
+  }
+  .brand-mark::before{top:3px;left:3px;border-right:none;border-bottom:none;}
+  .brand-mark::after{bottom:3px;right:3px;border-left:none;border-top:none;}
+  .brand-mark .monogram{
+    font-family:'Fraunces',serif;font-weight:600;font-size:16px;
+    color:var(--brass);letter-spacing:0.01em;line-height:1;
+  }
+  .brand-text{line-height:1.05;}
+  .brand-text .name{font-family:'Fraunces',serif;font-weight:600;font-size:22px;letter-spacing:0.01em;}
+  .brand-text .tag{font-size:11px;letter-spacing:0.14em;text-transform:uppercase;color:var(--ink-soft);}
+
+  nav.tabs{display:flex;gap:2px;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:3px;}
+  nav.tabs button{
+    border:none;background:transparent;padding:9px 16px;border-radius:6px;
+    font-family:'Inter',sans-serif;font-size:13.5px;font-weight:600;color:var(--ink-soft);
+    cursor:pointer;transition:all .15s ease;letter-spacing:0.01em;
+  }
+  nav.tabs button.active{background:var(--forest);color:#F3EFE2;}
+  nav.tabs button:not(.active):hover{color:var(--ink);}
+
+  .count-pill{
+    font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-soft);
+    background:var(--surface);border:1px solid var(--line);border-radius:20px;padding:6px 12px;
+  }
+
+  .view{display:none;}
+  .view.active{display:block;animation:fadein .25s ease;}
+  @keyframes fadein{from{opacity:0;transform:translateY(4px);}to{opacity:1;transform:none;}}
+
+  /* ---------- Inventory ---------- */
+  .toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;align-items:center;}
+  .search-wrap{position:relative;flex:1;min-width:200px;}
+  input[type=text], input[type=number], input[type=search], select, textarea{
+    font-family:'Inter',sans-serif;font-size:14px;color:var(--ink);
+    background:var(--surface-2);border:1px solid var(--line);border-radius:7px;
+    padding:10px 13px;width:100%;
+  }
+  input:focus, select:focus, textarea:focus{outline:2px solid var(--brass);outline-offset:1px;border-color:var(--brass);}
+  select{cursor:pointer;}
+  .toolbar select{width:auto;min-width:140px;}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:16px;}
+
+  .card{
+    background:var(--surface);border:1px solid var(--line);border-radius:10px;
+    overflow:hidden;cursor:pointer;box-shadow:var(--shadow);
+    transition:transform .15s ease, box-shadow .15s ease;
+    display:flex;flex-direction:column;
+  }
+  .card:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(42,38,34,0.12);}
+  .card-photo{
+    height:150px;background:var(--surface-2);position:relative;
+    display:flex;align-items:center;justify-content:center;
+    border-bottom:1px solid var(--line);
+    overflow:hidden;
+  }
+  .card-photo img{width:100%;height:100%;object-fit:cover;}
+  .card-photo .placeholder{color:var(--line-strong);font-size:34px;}
+  .tag-corner{
+    position:absolute;top:0;right:0;
+    background:var(--forest);color:#F3EFE2;
+    font-family:'IBM Plex Mono',monospace;font-size:10.5px;font-weight:500;
+    padding:4px 8px 4px 12px;
+    border-bottom-left-radius:10px;
+    letter-spacing:0.02em;
+  }
+  .card-body{padding:12px 14px 14px;display:flex;flex-direction:column;gap:6px;flex:1;}
+  .card-name{font-family:'Fraunces',serif;font-weight:600;font-size:16px;line-height:1.25;}
+  .card-price{font-family:'IBM Plex Mono',monospace;font-size:14px;color:var(--brass-deep);font-weight:600;}
+  .card-meta{display:flex;justify-content:space-between;align-items:center;margin-top:auto;padding-top:6px;}
+  .pill{
+    font-size:10.5px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase;
+    padding:3px 8px;border-radius:20px;
+  }
+  .pill.available{background:#E4E9DC;color:var(--sage);}
+  .pill.sold{background:#F0DDD8;color:var(--rust);}
+  .pill.reserved{background:#EFE4CB;color:var(--brass-deep);}
+  .loc-label{font-size:11.5px;color:var(--ink-soft);font-family:'IBM Plex Mono',monospace;}
+
+  .tag-chips{display:flex;flex-wrap:wrap;gap:5px;}
+  .tag-chip{
+    font-family:'IBM Plex Mono',monospace;font-size:10.5px;font-weight:500;
+    background:var(--surface-2);border:1px solid var(--line-strong);color:var(--ink-soft);
+    padding:2px 9px;border-radius:20px;letter-spacing:0.01em;
+  }
+  .tag-chip.on-card{background:#EFE8D6;color:var(--brass-deep);border-color:var(--brass);}
+  .tag-input-wrap{
+    display:flex;flex-wrap:wrap;gap:6px;align-items:center;
+    border:1px solid var(--line);border-radius:7px;background:var(--surface-2);
+    padding:8px 10px;
+  }
+  .tag-input-wrap input{border:none;background:transparent;flex:1;min-width:100px;padding:2px;}
+  .tag-input-wrap input:focus{outline:none;}
+  .tag-chip.removable{display:inline-flex;align-items:center;gap:5px;background:var(--forest);color:#F3EFE2;border-color:var(--forest);}
+  .tag-chip.removable button{
+    background:none;border:none;color:#F3EFE2;opacity:0.75;cursor:pointer;font-size:12px;line-height:1;padding:0;
+  }
+  .tag-chip.removable button:hover{opacity:1;}
+
+  .empty-state{
+    text-align:center;padding:70px 20px;color:var(--ink-soft);
+    border:1px dashed var(--line-strong);border-radius:12px;
+  }
+  .empty-state .serif{font-size:20px;color:var(--ink);margin-bottom:6px;}
+
+  /* ---------- Buttons ---------- */
+  .btn{
+    font-family:'Inter',sans-serif;font-weight:600;font-size:13.5px;
+    padding:10px 18px;border-radius:7px;border:1px solid transparent;cursor:pointer;
+    display:inline-flex;align-items:center;gap:7px;transition:opacity .15s ease, transform .1s ease;
+  }
+  .btn:active{transform:scale(0.98);}
+  .btn-primary{background:var(--forest);color:#F3EFE2;}
+  .btn-primary:hover{opacity:0.9;}
+  .btn-brass{background:var(--brass);color:#2A2622;}
+  .btn-brass:hover{opacity:0.9;}
+  .btn-outline{background:transparent;border-color:var(--line-strong);color:var(--ink);}
+  .btn-outline:hover{border-color:var(--ink-soft);}
+  .btn-rust{background:transparent;border-color:var(--rust);color:var(--rust);}
+  .btn-rust:hover{background:var(--rust);color:#fff;}
+  .btn-sage{background:transparent;border-color:var(--sage);color:var(--sage);}
+  .btn-sage:hover{background:var(--sage);color:#fff;}
+  .btn:disabled{opacity:0.45;cursor:not-allowed;}
+  .btn.small{padding:7px 12px;font-size:12.5px;}
+
+  /* ---------- Forms ---------- */
+  .panel{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:26px;box-shadow:var(--shadow);}
+  .panel-title{font-family:'Fraunces',serif;font-size:20px;font-weight:600;margin:0 0 20px;}
+  .form-grid{display:grid;grid-template-columns:1.3fr 1fr;gap:28px;}
+  @media(max-width:760px){.form-grid{grid-template-columns:1fr;}}
+  .field{margin-bottom:16px;}
+  .field label{display:block;font-size:12px;font-weight:600;text-transform:uppercase;letter-spacing:0.05em;color:var(--ink-soft);margin-bottom:6px;}
+  textarea{resize:vertical;min-height:80px;}
+  .field-row{display:grid;grid-template-columns:1fr 1fr;gap:14px;}
+
+  .photo-drop{
+    border:1.5px dashed var(--line-strong);border-radius:9px;padding:22px;text-align:center;
+    color:var(--ink-soft);cursor:pointer;font-size:13px;background:var(--surface-2);
+  }
+  .photo-drop:hover{border-color:var(--brass);}
+  .photo-thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}
+  .photo-thumb{position:relative;width:70px;height:70px;border-radius:6px;overflow:hidden;border:1px solid var(--line);}
+  .photo-thumb img{width:100%;height:100%;object-fit:cover;}
+  .photo-thumb .rm{
+    position:absolute;top:2px;right:2px;background:rgba(42,38,34,0.75);color:#fff;
+    border:none;border-radius:50%;width:18px;height:18px;font-size:11px;line-height:1;cursor:pointer;
+  }
+
+  /* ---------- Scan ---------- */
+  .scan-wrap{display:flex;flex-direction:column;align-items:center;gap:18px;padding:10px 0;}
+  .viewfinder{
+    width:100%;max-width:420px;aspect-ratio:1/1;background:#1c231d;border-radius:14px;
+    position:relative;overflow:hidden;
+  }
+  .viewfinder video{width:100%;height:100%;object-fit:cover;}
+  .viewfinder .brackets{position:absolute;inset:16%;pointer-events:none;}
+  .viewfinder .brackets span{position:absolute;width:26px;height:26px;border:3px solid var(--brass);}
+  .viewfinder .brackets span:nth-child(1){top:0;left:0;border-right:none;border-bottom:none;}
+  .viewfinder .brackets span:nth-child(2){top:0;right:0;border-left:none;border-bottom:none;}
+  .viewfinder .brackets span:nth-child(3){bottom:0;left:0;border-right:none;border-top:none;}
+  .viewfinder .brackets span:nth-child(4){bottom:0;right:0;border-left:none;border-top:none;}
+  .scan-status{font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--ink-soft);text-align:center;}
+  .manual-scan{display:flex;gap:8px;max-width:420px;width:100%;}
+
+  /* ---------- Locations ---------- */
+  .loc-row{
+    display:flex;align-items:center;justify-content:space-between;
+    padding:14px 16px;background:var(--surface);border:1px solid var(--line);border-radius:9px;margin-bottom:10px;
+  }
+  .loc-row .loc-name{font-family:'Fraunces',serif;font-weight:600;font-size:15.5px;}
+  .loc-row .loc-count{font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--ink-soft);}
+  .add-loc-row{display:flex;gap:10px;margin-top:16px;}
+
+  /* ---------- Modal ---------- */
+  .overlay{
+    position:fixed;inset:0;background:rgba(30,26,22,0.55);backdrop-filter:blur(2px);
+    display:none;align-items:flex-start;justify-content:center;padding:40px 16px;overflow-y:auto;z-index:100;
+  }
+  .overlay.active{display:flex;}
+  .modal{
+    background:var(--surface-2);border-radius:14px;max-width:640px;width:100%;
+    box-shadow:0 20px 60px rgba(0,0,0,0.3);position:relative;
+  }
+  .modal-header{display:flex;justify-content:space-between;align-items:flex-start;padding:22px 24px 0;}
+  .modal-close{background:none;border:none;font-size:22px;color:var(--ink-soft);cursor:pointer;line-height:1;padding:4px;}
+  .modal-body{padding:6px 24px 26px;}
+  .modal-photos{display:flex;gap:8px;overflow-x:auto;margin:14px 0;padding-bottom:4px;}
+  .modal-photos img{height:160px;border-radius:8px;object-fit:cover;flex-shrink:0;}
+  .modal-photos .none{
+    height:160px;width:100%;border-radius:8px;background:var(--surface);border:1px dashed var(--line-strong);
+    display:flex;align-items:center;justify-content:center;color:var(--line-strong);font-size:40px;
+  }
+  .id-tag{
+    font-family:'IBM Plex Mono',monospace;font-size:12px;background:var(--forest);color:#F3EFE2;
+    padding:3px 9px;border-radius:20px;display:inline-block;
+  }
+  .modal-title-row{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:4px;}
+  .modal .desc{color:var(--ink-soft);font-size:14px;line-height:1.55;margin:10px 0 16px;}
+  .action-grid{display:flex;gap:8px;flex-wrap:wrap;margin:16px 0;}
+  .move-row{display:flex;gap:8px;align-items:center;margin:14px 0;}
+  .move-row select{width:auto;flex:1;}
+  .history{margin-top:18px;border-top:1px solid var(--line);padding-top:14px;}
+  .history h4{font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-soft);margin:0 0 10px;}
+  .history-item{font-size:12.5px;color:var(--ink-soft);padding:5px 0;border-left:2px solid var(--line-strong);padding-left:10px;margin-bottom:2px;}
+  .history-item b{color:var(--ink);}
+
+  /* Label / QR modal */
+  .label-preview{
+    background:#fff;border:1px solid var(--line);border-radius:8px;padding:16px;
+    display:flex;flex-direction:column;align-items:center;gap:6px;width:220px;margin:14px auto;
+  }
+  .label-preview .lname{font-family:'Fraunces',serif;font-weight:600;font-size:14px;text-align:center;}
+  .label-preview .lprice{font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--brass-deep);}
+  .label-preview .lid{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#888;}
+
+  .toast{
+    position:fixed;bottom:24px;left:50%;transform:translateX(-50%);
+    background:var(--forest);color:#F3EFE2;padding:12px 20px;border-radius:8px;font-size:13.5px;
+    box-shadow:0 8px 24px rgba(0,0,0,0.25);z-index:200;opacity:0;pointer-events:none;transition:opacity .25s ease, transform .25s ease;
+  }
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px);}
+
+  @media print{
+    body *{visibility:hidden;}
+    #print-area, #print-area *{visibility:visible;}
+    #print-area{position:absolute;top:0;left:0;width:100%;}
+  }
+  #print-area{display:none;}
+  .print-labels{display:flex;flex-wrap:wrap;gap:10px;padding:16px;}
+  .print-label{
+    width:2.5in;height:1.7in;border:1px dashed #999;border-radius:6px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:8px;
+  }
+  .print-label img{width:70px;height:70px;}
+  .print-label .pn{font-family:'Fraunces',serif;font-weight:600;font-size:11px;text-align:center;}
+  .print-label .pp{font-family:'IBM Plex Mono',monospace;font-size:10px;}
+  .print-label .pid{font-family:'IBM Plex Mono',monospace;font-size:8px;color:#666;}
+
+  .helper-note{font-size:12px;color:var(--ink-soft);margin-top:4px;}
+  .loading-msg{text-align:center;padding:60px;color:var(--ink-soft);font-family:'IBM Plex Mono',monospace;font-size:13px;}
+</style>
+</head>
+<body>
+
+<div id="app">
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark"><span class="monogram">NM</span></div>
+      <div class="brand-text">
+        <div class="name">Nicolo &amp; Melissa</div>
+        <div class="tag">Antique Inventory</div>
+      </div>
+    </div>
+    <nav class="tabs">
+      <button data-tab="inventory" class="active">Inventory</button>
+      <button data-tab="add">Add Item</button>
+      <button data-tab="scan">Scan</button>
+      <button data-tab="locations">Locations</button>
+    </nav>
+    <div class="count-pill" id="headerCount">— items</div>
+  </header>
+
+  <!-- INVENTORY -->
+  <section class="view active" id="view-inventory">
+    <div class="toolbar">
+      <div class="search-wrap">
+        <input type="search" id="searchInput" placeholder="Search by name, description, or ID…">
+      </div>
+      <select id="filterLocation"><option value="">All locations</option></select>
+      <select id="filterStatus">
+        <option value="">All statuses</option>
+        <option value="available">Available</option>
+        <option value="reserved">Reserved</option>
+        <option value="sold">Sold</option>
+      </select>
+      <select id="filterTag"><option value="">All tags</option></select>
+    </div>
+    <div id="loadingInv" class="loading-msg">Loading inventory…</div>
+    <div class="grid" id="itemGrid"></div>
+    <div class="empty-state" id="emptyState" style="display:none;">
+      <div class="serif">No pieces here yet</div>
+      <div>Add your first item, or adjust your filters.</div>
+    </div>
+  </section>
+
+  <!-- ADD ITEM -->
+  <section class="view" id="view-add">
+    <div class="panel">
+      <div class="panel-title">Add a piece</div>
+      <div class="form-grid">
+        <div>
+          <div class="field">
+            <label>Name</label>
+            <input type="text" id="f-name" placeholder="e.g. Mahogany Writing Desk, c.1890">
+          </div>
+          <div class="field-row">
+            <div class="field">
+              <label>Category</label>
+              <input type="text" id="f-category" placeholder="Furniture, Jewelry, Ceramics…">
+            </div>
+            <div class="field">
+              <label>Price</label>
+              <input type="number" id="f-price" placeholder="0.00" step="0.01" min="0">
+            </div>
+          </div>
+          <div class="field">
+            <label>Description</label>
+            <textarea id="f-desc" placeholder="Condition, provenance, maker's marks, dimensions…"></textarea>
+          </div>
+          <div class="field">
+            <label>Tags</label>
+            <div class="tag-input-wrap" id="tagInputWrap">
+              <input type="text" id="f-tagInput" placeholder="Type a tag and press Enter…">
+            </div>
+            <div class="helper-note">e.g. Victorian, Mahogany, Fragile, Estate Sale</div>
+          </div>
+          <div class="field">
+            <label>Starting location</label>
+            <select id="f-location"></select>
+          </div>
+        </div>
+        <div>
+          <div class="field">
+            <label>Photos</label>
+            <div class="photo-drop" id="photoDrop">Click to add photos, or drop them here</div>
+            <input type="file" id="photoInput" accept="image/*" multiple style="display:none;">
+            <div class="photo-thumbs" id="photoThumbs"></div>
+            <div class="helper-note">Photos are compressed automatically for storage.</div>
+          </div>
+        </div>
+      </div>
+      <button class="btn btn-primary" id="saveItemBtn">Save piece &amp; generate QR tag</button>
+      <div class="helper-note" style="margin-top:10px;">This inventory is shared — everyone on your team who opens this app sees the same items.</div>
+    </div>
+  </section>
+
+  <!-- SCAN -->
+  <section class="view" id="view-scan">
+    <div class="panel">
+      <div class="panel-title">Scan a tag</div>
+      <div class="scan-wrap">
+        <div class="viewfinder" id="viewfinder">
+          <video id="scanVideo" playsinline muted></video>
+          <div class="brackets"><span></span><span></span><span></span><span></span></div>
+        </div>
+        <div class="scan-status" id="scanStatus">Starting camera…</div>
+        <button class="btn btn-outline" id="toggleCamBtn">Stop camera</button>
+        <div class="manual-scan">
+          <input type="text" id="manualId" placeholder="Or type an item ID, e.g. AN-0007">
+          <button class="btn btn-brass" id="manualLookupBtn">Find</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- LOCATIONS -->
+  <section class="view" id="view-locations">
+    <div class="panel">
+      <div class="panel-title">Warehouses &amp; locations</div>
+      <div id="locList"></div>
+      <div class="add-loc-row">
+        <input type="text" id="newLocInput" placeholder="New location name">
+        <button class="btn btn-brass" id="addLocBtn">Add location</button>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- Item detail modal -->
+<div class="overlay" id="itemOverlay">
+  <div class="modal">
+    <div class="modal-header">
+      <div class="modal-title-row" id="modalTitleRow"></div>
+      <button class="modal-close" id="closeModalBtn">&times;</button>
+    </div>
+    <div class="modal-body" id="modalBody"></div>
+  </div>
+</div>
+
+<!-- QR / Label modal -->
+<div class="overlay" id="labelOverlay">
+  <div class="modal" style="max-width:340px;">
+    <div class="modal-header">
+      <div class="modal-title-row"><span class="serif" style="font-size:17px;font-weight:600;">Printable tag</span></div>
+      <button class="modal-close" id="closeLabelBtn">&times;</button>
+    </div>
+    <div class="modal-body" style="text-align:center;">
+      <div id="labelPreviewHolder"></div>
+      <button class="btn btn-primary" id="printLabelBtn" style="margin-top:6px;">Print label</button>
+    </div>
+  </div>
+</div>
+
+<div id="print-area"><div class="print-labels" id="printLabels"></div></div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+"use strict";
+
+/* ---------------- Firebase config ---------------- */
+/* PASTE your Firebase project's config object here (from Firebase Console →
+   Project settings → General → "Your apps" → SDK setup snippet). */
+const firebaseConfig = {
+  apiKey: "AIzaSyDigae48aLfgc8MH5FrIygOB7L_X_bDk88",
+  authDomain: "nminventory-4.firebaseapp.com",
+  projectId: "nminventory-4",
+  storageBucket: "nminventory-4.firebasestorage.app",
+  messagingSenderId: "836687851930",
+  appId: "1:836687851930:web:876e2627f8dbf9e41bca23"
+};
+
+firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+let authReady = firebase.auth().signInAnonymously().catch(err=>{
+  console.error('Anonymous sign-in failed', err);
+  showDebugError('Sign-in failed: ' + (err && err.code ? err.code+' — '+err.message : err));
+});
+
+/* ---------------- On-screen error banner ----------------
+   iPhone Safari doesn't make it easy to see console errors, so any
+   Firestore failure gets shown right on the page instead of silently
+   hanging. Tap the banner to dismiss it. */
+function ensureBanner(){
+  let b = document.getElementById('debugBanner');
+  if(!b){
+    b = document.createElement('div');
+    b.id = 'debugBanner';
+    b.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:999;background:#A64B3A;color:#fff;'
+      + 'font-family:monospace;font-size:12.5px;padding:10px 14px;cursor:pointer;'
+      + 'max-height:40vh;overflow-y:auto;white-space:pre-wrap;box-shadow:0 2px 10px rgba(0,0,0,0.3);';
+    b.addEventListener('click', ()=>{ b.style.display='none'; });
+    document.body.appendChild(b);
+  }
+  return b;
+}
+function showDebugError(msg){
+  const b = ensureBanner();
+  const line = '⚠ ' + msg;
+  b.textContent = b.textContent ? b.textContent + '\n' + line : line;
+  b.style.display = 'block';
+}
+function withTimeout(promise, ms, label){
+  return Promise.race([
+    promise,
+    new Promise((_, reject)=> setTimeout(()=> reject(new Error(label + ' timed out after ' + (ms/1000) + 's — check Firestore is created and Anonymous auth is enabled')), ms))
+  ]);
+}
+
+/* ---------------- Storage helpers (Firestore-backed) ----------------
+   These mirror the old key/value API (get/set/delete/list) so the rest
+   of the app's logic didn't need to change. Every item is a document in
+   the "items" collection; locations and the ID counter live in "meta". */
+async function ensureAuth(){
+  try{ await withTimeout(authReady, 8000, 'Sign-in'); }
+  catch(e){ showDebugError(e.message); }
+}
+
+async function sGet(key, shared){
+  await ensureAuth();
+  try{
+    if(key.startsWith('item:')){
+      const doc = await withTimeout(db.collection('items').doc(key.slice(5)).get(), 10000, 'Firestore read');
+      return doc.exists ? JSON.stringify(doc.data()) : null;
+    } else {
+      const doc = await withTimeout(db.collection('meta').doc(key).get(), 10000, 'Firestore read');
+      return doc.exists ? doc.data().value : null;
+    }
+  }catch(e){ console.error('sGet failed', e); showDebugError('Load failed: ' + e.message); return null; }
+}
+async function sSet(key, value, shared){
+  await ensureAuth();
+  try{
+    if(key.startsWith('item:')){
+      await withTimeout(db.collection('items').doc(key.slice(5)).set(JSON.parse(value)), 10000, 'Firestore write');
+    } else {
+      await withTimeout(db.collection('meta').doc(key).set({value}), 10000, 'Firestore write');
+    }
+    return true;
+  }catch(e){ console.error('sSet failed', e); showDebugError('Save failed: ' + e.message); return null; }
+}
+async function sDelete(key, shared){
+  await ensureAuth();
+  try{
+    if(key.startsWith('item:')){
+      await withTimeout(db.collection('items').doc(key.slice(5)).delete(), 10000, 'Firestore delete');
+    } else {
+      await withTimeout(db.collection('meta').doc(key).delete(), 10000, 'Firestore delete');
+    }
+    return true;
+  }catch(e){ console.error('sDelete failed', e); showDebugError('Delete failed: ' + e.message); return null; }
+}
+async function sList(prefix, shared){
+  await ensureAuth();
+  try{
+    if(prefix==='item:'){
+      const snap = await withTimeout(db.collection('items').get(), 10000, 'Firestore list');
+      return snap.docs.map(d=>'item:'+d.id);
+    }
+    return [];
+  }catch(e){ console.error('sList failed', e); showDebugError('Load failed: ' + e.message); return []; }
+}
+
+const DEFAULT_LOCATIONS = ["The Shop – New York City","The Cave","House","Other"];
+
+let state = {
+  items: [],
+  locations: [],
+  activeTab: 'inventory',
+  cameraStream: null,
+  scanning: false,
+  currentItemId: null
+};
+
+/* ---------------- Toast ---------------- */
+let toastTimer;
+function toast(msg){
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(()=>t.classList.remove('show'), 2200);
+}
+
+/* ---------------- Tabs ---------------- */
+document.querySelectorAll('nav.tabs button').forEach(btn=>{
+  btn.addEventListener('click', ()=> switchTab(btn.dataset.tab));
+});
+function switchTab(tab){
+  state.activeTab = tab;
+  document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
+  document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
+  document.getElementById('view-'+tab).classList.add('active');
+  if(tab==='scan') startCamera(); else stopCamera();
+  if(tab==='locations') renderLocations();
+}
+
+/* ---------------- ID generation ---------------- */
+async function nextItemId(){
+  let counter = await sGet('meta:counter', true);
+  let n = counter ? parseInt(counter,10) : 0;
+  n += 1;
+  await sSet('meta:counter', String(n), true);
+  return 'AN-' + String(n).padStart(4,'0');
+}
+
+/* ---------------- Load data ---------------- */
+async function loadLocations(){
+  let raw = await sGet('locations', true);
+  if(!raw){
+    state.locations = DEFAULT_LOCATIONS.slice();
+    await sSet('locations', JSON.stringify(state.locations), true);
+  } else {
+    try{ state.locations = JSON.parse(raw); }catch(e){ state.locations = DEFAULT_LOCATIONS.slice(); }
+  }
+}
+
+async function loadItems(){
+  document.getElementById('loadingInv').style.display = 'block';
+  const keys = await sList('item:', true);
+  const items = [];
+  for(const k of keys){
+    const raw = await sGet(k, true);
+    if(raw){
+      try{ items.push(JSON.parse(raw)); }catch(e){}
+    }
+  }
+  items.sort((a,b)=> (b.createdAt||0) - (a.createdAt||0));
+  state.items = items;
+  document.getElementById('loadingInv').style.display = 'none';
+  renderGrid();
+  updateHeaderCount();
+  populateLocationSelects();
+}
+
+function updateHeaderCount(){
+  const n = state.items.length;
+  document.getElementById('headerCount').textContent = n + (n===1?' item':' items');
+}
+
+function populateLocationSelects(){
+  const selFilter = document.getElementById('filterLocation');
+  const selForm = document.getElementById('f-location');
+  const cur = selFilter.value;
+  selFilter.innerHTML = '<option value="">All locations</option>' + state.locations.map(l=>`<option value="${esc(l)}">${esc(l)}</option>`).join('');
+  selFilter.value = cur;
+  selForm.innerHTML = state.locations.map(l=>`<option value="${esc(l)}">${esc(l)}</option>`).join('');
+  populateTagFilter();
+}
+
+function allTags(){
+  const set = new Set();
+  state.items.forEach(it=>(it.tags||[]).forEach(t=>set.add(t)));
+  return Array.from(set).sort((a,b)=>a.localeCompare(b));
+}
+
+function populateTagFilter(){
+  const sel = document.getElementById('filterTag');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">All tags</option>' + allTags().map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('');
+  sel.value = cur;
+}
+
+function esc(s){
+  return String(s==null?'':s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function money(v){
+  const n = parseFloat(v);
+  if(isNaN(n)) return '—';
+  return '$' + n.toLocaleString(undefined,{minimumFractionDigits:2, maximumFractionDigits:2});
+}
+
+/* ---------------- Render inventory grid ---------------- */
+function renderGrid(){
+  const q = document.getElementById('searchInput').value.trim().toLowerCase();
+  const locF = document.getElementById('filterLocation').value;
+  const statF = document.getElementById('filterStatus').value;
+  const tagF = document.getElementById('filterTag').value;
+
+  const filtered = state.items.filter(it=>{
+    if(locF && it.location !== locF) return false;
+    if(statF && it.status !== statF) return false;
+    if(tagF && !(it.tags||[]).includes(tagF)) return false;
+    if(q){
+      const hay = (it.name+' '+it.description+' '+it.id+' '+it.category+' '+(it.tags||[]).join(' ')).toLowerCase();
+      if(!hay.includes(q)) return false;
+    }
+    return true;
+  });
+
+  const grid = document.getElementById('itemGrid');
+  const empty = document.getElementById('emptyState');
+  if(filtered.length===0){
+    grid.innerHTML=''; empty.style.display='block';
+    return;
+  }
+  empty.style.display='none';
+
+  grid.innerHTML = filtered.map(it=>{
+    const photo = (it.photos && it.photos[0]) ? `<img src="${it.photos[0]}" alt="">` : `<div class="placeholder">◆</div>`;
+    return `
+    <div class="card" data-id="${esc(it.id)}">
+      <div class="card-photo">
+        ${photo}
+        <div class="tag-corner">${esc(it.id)}</div>
+      </div>
+      <div class="card-body">
+        <div class="card-name">${esc(it.name || 'Untitled piece')}</div>
+        <div class="card-price">${money(it.price)}</div>
+        ${(it.tags && it.tags.length) ? `<div class="tag-chips">${it.tags.map(t=>`<span class="tag-chip on-card">${esc(t)}</span>`).join('')}</div>` : ''}
+        <div class="card-meta">
+          <span class="loc-label">${esc(it.location||'—')}</span>
+          <span class="pill ${it.status}">${esc(it.status)}</span>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+
+  grid.querySelectorAll('.card').forEach(c=>{
+    c.addEventListener('click', ()=> openItemModal(c.dataset.id));
+  });
+}
+
+document.getElementById('searchInput').addEventListener('input', renderGrid);
+document.getElementById('filterLocation').addEventListener('change', renderGrid);
+document.getElementById('filterStatus').addEventListener('change', renderGrid);
+document.getElementById('filterTag').addEventListener('change', renderGrid);
+
+/* ---------------- Photo handling ---------------- */
+let pendingPhotos = [];
+let pendingTags = [];
+const tagInputWrap = document.getElementById('tagInputWrap');
+const fTagInput = document.getElementById('f-tagInput');
+fTagInput.addEventListener('keydown', e=>{
+  if(e.key==='Enter' || e.key===','){
+    e.preventDefault();
+    const v = fTagInput.value.trim().replace(/,$/,'');
+    if(v && !pendingTags.includes(v)){ pendingTags.push(v); renderTagChips(); }
+    fTagInput.value='';
+  } else if(e.key==='Backspace' && fTagInput.value==='' && pendingTags.length){
+    pendingTags.pop(); renderTagChips();
+  }
+});
+function renderTagChips(){
+  tagInputWrap.querySelectorAll('.tag-chip.removable').forEach(el=>el.remove());
+  pendingTags.forEach((t,i)=>{
+    const chip = document.createElement('span');
+    chip.className='tag-chip removable';
+    chip.innerHTML = `${esc(t)} <button type="button" data-i="${i}">&times;</button>`;
+    chip.querySelector('button').addEventListener('click', ()=>{
+      pendingTags.splice(i,1); renderTagChips();
+    });
+    tagInputWrap.insertBefore(chip, fTagInput);
+  });
+}
+const photoDrop = document.getElementById('photoDrop');
+const photoInput = document.getElementById('photoInput');
+photoDrop.addEventListener('click', ()=>photoInput.click());
+photoInput.addEventListener('change', e=>handleFiles(e.target.files));
+photoDrop.addEventListener('dragover', e=>{e.preventDefault(); photoDrop.style.borderColor='var(--brass)';});
+photoDrop.addEventListener('dragleave', ()=>{photoDrop.style.borderColor='';});
+photoDrop.addEventListener('drop', e=>{
+  e.preventDefault(); photoDrop.style.borderColor='';
+  handleFiles(e.dataTransfer.files);
+});
+
+function handleFiles(fileList){
+  Array.from(fileList).slice(0,6).forEach(file=>{
+    if(!file.type.startsWith('image/')) return;
+    compressImage(file, dataUrl=>{
+      pendingPhotos.push(dataUrl);
+      renderThumbs();
+    });
+  });
+}
+
+function compressImage(file, cb){
+  const reader = new FileReader();
+  reader.onload = e=>{
+    const img = new Image();
+    img.onload = ()=>{
+      const maxW = 640;
+      const scale = Math.min(1, maxW / img.width);
+      const w = Math.round(img.width * scale);
+      const h = Math.round(img.height * scale);
+      const canvas = document.createElement('canvas');
+      canvas.width = w; canvas.height = h;
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(img, 0, 0, w, h);
+      cb(canvas.toDataURL('image/jpeg', 0.72));
+    };
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
+function renderThumbs(){
+  const holder = document.getElementById('photoThumbs');
+  holder.innerHTML = pendingPhotos.map((p,i)=>`
+    <div class="photo-thumb">
+      <img src="${p}">
+      <button class="rm" data-i="${i}">&times;</button>
+    </div>`).join('');
+  holder.querySelectorAll('.rm').forEach(b=>{
+    b.addEventListener('click', ()=>{
+      pendingPhotos.splice(parseInt(b.dataset.i,10),1);
+      renderThumbs();
+    });
+  });
+}
+
+/* ---------------- Save item ---------------- */
+document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
+  const name = document.getElementById('f-name').value.trim();
+  if(!name){ toast('Please enter a name for the piece'); return; }
+  const btn = document.getElementById('saveItemBtn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+
+  const id = await nextItemId();
+  const item = {
+    id,
+    name,
+    category: document.getElementById('f-category').value.trim(),
+    price: document.getElementById('f-price').value,
+    description: document.getElementById('f-desc').value.trim(),
+    location: document.getElementById('f-location').value || state.locations[0] || '',
+    status: 'available',
+    tags: pendingTags.slice(),
+    photos: pendingPhotos.slice(),
+    createdAt: Date.now(),
+    history: [{ts: Date.now(), text: `Added to inventory at ${document.getElementById('f-location').value || state.locations[0] || 'unassigned location'}`}]
+  };
+
+  const ok = await sSet('item:'+id, JSON.stringify(item), true);
+  btn.disabled = false; btn.textContent = 'Save piece & generate QR tag';
+
+  if(!ok){ toast('Could not save — please try again'); return; }
+
+  // reset form
+  document.getElementById('f-name').value='';
+  document.getElementById('f-category').value='';
+  document.getElementById('f-price').value='';
+  document.getElementById('f-desc').value='';
+  pendingPhotos = [];
+  renderThumbs();
+  pendingTags = [];
+  renderTagChips();
+
+  await loadItems();
+  toast(id + ' saved to inventory');
+  openLabelModal(item);
+});
+
+/* ---------------- Item modal ---------------- */
+function findItem(id){ return state.items.find(i=>i.id===id); }
+
+function openItemModal(id){
+  const item = findItem(id);
+  if(!item){ toast('Item not found: '+id); return; }
+  state.currentItemId = id;
+
+  document.getElementById('modalTitleRow').innerHTML = `
+    <span class="serif" style="font-size:19px;font-weight:600;">${esc(item.name)}</span>
+    <span class="id-tag">${esc(item.id)}</span>
+    <span class="pill ${item.status}">${esc(item.status)}</span>
+  `;
+
+  const photosHtml = (item.photos && item.photos.length)
+    ? item.photos.map(p=>`<img src="${p}">`).join('')
+    : `<div class="none">◆</div>`;
+
+  const locOptions = state.locations.map(l=>`<option value="${esc(l)}" ${l===item.location?'selected':''}>${esc(l)}</option>`).join('');
+
+  const historyHtml = (item.history||[]).slice().reverse().map(h=>`
+    <div class="history-item"><b>${new Date(h.ts).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</b> — ${esc(h.text)}</div>
+  `).join('') || '<div class="history-item">No history yet.</div>';
+
+  document.getElementById('modalBody').innerHTML = `
+    <div class="modal-photos">${photosHtml}</div>
+    <div class="card-price" style="font-size:17px;">${money(item.price)}</div>
+    <div class="desc">${esc(item.description) || 'No description added.'}</div>
+    <div class="loc-label" style="font-size:12.5px;">Category: ${esc(item.category)||'—'} &nbsp;·&nbsp; Location: ${esc(item.location)}</div>
+
+    <div class="tag-input-wrap" id="modalTagWrap" style="margin:12px 0;">
+      ${(item.tags||[]).map((t,i)=>`<span class="tag-chip removable" data-tag-i="${i}">${esc(t)} <button type="button" data-rm-tag="${i}">&times;</button></span>`).join('')}
+      <input type="text" id="modalTagInput" placeholder="Add a tag…">
+    </div>
+
+    <div class="action-grid">
+      ${item.status!=='sold' ? '<button class="btn btn-rust small" id="markSoldBtn">Mark sold</button>' : '<button class="btn btn-sage small" id="markAvailBtn">Mark available</button>'}
+      ${item.status==='available' ? '<button class="btn btn-outline small" id="markReservedBtn">Mark reserved</button>' : ''}
+      <button class="btn btn-brass small" id="printTagBtn">Print QR tag</button>
+      <button class="btn btn-outline small" id="deleteItemBtn">Delete</button>
+    </div>
+
+    <div class="move-row">
+      <select id="moveLocSelect">${locOptions}</select>
+      <button class="btn btn-primary small" id="moveBtn">Move item</button>
+    </div>
+
+    <div class="history">
+      <h4>History</h4>
+      ${historyHtml}
+    </div>
+  `;
+
+  document.getElementById('itemOverlay').classList.add('active');
+
+  const soldBtn = document.getElementById('markSoldBtn');
+  if(soldBtn) soldBtn.addEventListener('click', ()=>updateStatus(item.id,'sold'));
+  const availBtn = document.getElementById('markAvailBtn');
+  if(availBtn) availBtn.addEventListener('click', ()=>updateStatus(item.id,'available'));
+  const resBtn = document.getElementById('markReservedBtn');
+  if(resBtn) resBtn.addEventListener('click', ()=>updateStatus(item.id,'reserved'));
+  document.getElementById('moveBtn').addEventListener('click', ()=>moveItem(item.id));
+  document.getElementById('printTagBtn').addEventListener('click', ()=>openLabelModal(item));
+  document.getElementById('deleteItemBtn').addEventListener('click', ()=>deleteItem(item.id));
+
+  const modalTagInput = document.getElementById('modalTagInput');
+  modalTagInput.addEventListener('keydown', e=>{
+    if(e.key==='Enter' || e.key===','){
+      e.preventDefault();
+      const v = modalTagInput.value.trim().replace(/,$/,'');
+      if(v) addTagToItem(item.id, v);
+      modalTagInput.value='';
+    }
+  });
+  document.querySelectorAll('#modalTagWrap button[data-rm-tag]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      const i = parseInt(btn.dataset.rmTag,10);
+      removeTagFromItem(item.id, i);
+    });
+  });
+}
+
+async function addTagToItem(id, tag){
+  const item = findItem(id);
+  if(!item) return;
+  item.tags = item.tags || [];
+  if(item.tags.includes(tag)){ return; }
+  item.tags.push(tag);
+  await sSet('item:'+id, JSON.stringify(item), true);
+  await loadItems();
+  openItemModal(id);
+}
+
+async function removeTagFromItem(id, index){
+  const item = findItem(id);
+  if(!item || !item.tags) return;
+  item.tags.splice(index,1);
+  await sSet('item:'+id, JSON.stringify(item), true);
+  await loadItems();
+  openItemModal(id);
+}
+
+document.getElementById('closeModalBtn').addEventListener('click', ()=>{
+  document.getElementById('itemOverlay').classList.remove('active');
+});
+document.getElementById('itemOverlay').addEventListener('click', e=>{
+  if(e.target.id==='itemOverlay') e.currentTarget.classList.remove('active');
+});
+
+async function updateStatus(id, status){
+  const item = findItem(id);
+  if(!item) return;
+  item.status = status;
+  item.history = item.history || [];
+  item.history.push({ts: Date.now(), text: 'Marked as ' + status});
+  await sSet('item:'+id, JSON.stringify(item), true);
+  await loadItems();
+  toast(item.id + ' marked ' + status);
+  openItemModal(id);
+}
+
+async function moveItem(id){
+  const item = findItem(id);
+  const newLoc = document.getElementById('moveLocSelect').value;
+  if(!item || !newLoc || newLoc===item.location){ toast('Choose a different location'); return; }
+  const from = item.location;
+  item.location = newLoc;
+  item.history = item.history || [];
+  item.history.push({ts: Date.now(), text: `Moved from ${from||'unassigned'} to ${newLoc}`});
+  await sSet('item:'+id, JSON.stringify(item), true);
+  await loadItems();
+  toast(item.id + ' moved to ' + newLoc);
+  openItemModal(id);
+}
+
+async function deleteItem(id){
+  if(!confirm('Delete this item permanently? This cannot be undone.')) return;
+  await sDelete('item:'+id, true);
+  document.getElementById('itemOverlay').classList.remove('active');
+  await loadItems();
+  toast('Item deleted');
+}
+
+/* ---------------- QR label ---------------- */
+function openLabelModal(item){
+  const holder = document.getElementById('labelPreviewHolder');
+  holder.innerHTML = `
+    <div class="label-preview">
+      <div id="qrHolder"></div>
+      <div class="lname">${esc(item.name)}</div>
+      <div class="lprice">${money(item.price)}</div>
+      <div class="lid">${esc(item.id)}</div>
+    </div>`;
+  new QRCode(document.getElementById('qrHolder'), {
+    text: 'PROVQR:'+item.id,
+    width: 130, height: 130,
+    colorDark:'#2A2622', colorLight:'#ffffff'
+  });
+  document.getElementById('labelOverlay').classList.add('active');
+  document.getElementById('printLabelBtn').onclick = ()=>printLabel(item);
+}
+document.getElementById('closeLabelBtn').addEventListener('click', ()=>{
+  document.getElementById('labelOverlay').classList.remove('active');
+});
+document.getElementById('labelOverlay').addEventListener('click', e=>{
+  if(e.target.id==='labelOverlay') e.currentTarget.classList.remove('active');
+});
+
+function printLabel(item){
+  const area = document.getElementById('printLabels');
+  const qrTemp = document.createElement('div');
+  new QRCode(qrTemp, {text:'PROVQR:'+item.id, width:120, height:120});
+  setTimeout(()=>{
+    const img = qrTemp.querySelector('img') || qrTemp.querySelector('canvas');
+    const src = img.tagName==='IMG' ? img.src : img.toDataURL();
+    area.innerHTML = `
+      <div class="print-label">
+        <img src="${src}">
+        <div class="pn">${esc(item.name)}</div>
+        <div class="pp">${money(item.price)}</div>
+        <div class="pid">${esc(item.id)}</div>
+      </div>`;
+    window.print();
+  }, 120);
+}
+
+/* ---------------- Locations ---------------- */
+function renderLocations(){
+  const counts = {};
+  state.items.forEach(it=>{ counts[it.location] = (counts[it.location]||0)+1; });
+  const holder = document.getElementById('locList');
+  holder.innerHTML = state.locations.map(l=>`
+    <div class="loc-row">
+      <div>
+        <div class="loc-name">${esc(l)}</div>
+        <div class="loc-count">${counts[l]||0} item${(counts[l]||0)===1?'':'s'}</div>
+      </div>
+      <button class="btn btn-outline small" data-loc="${esc(l)}">Remove</button>
+    </div>`).join('');
+  holder.querySelectorAll('button[data-loc]').forEach(b=>{
+    b.addEventListener('click', ()=>removeLocation(b.dataset.loc, counts[b.dataset.loc]||0));
+  });
+}
+
+async function removeLocation(loc, count){
+  if(count>0){ toast(`Move the ${count} item(s) out of ${loc} before removing it`); return; }
+  state.locations = state.locations.filter(l=>l!==loc);
+  await sSet('locations', JSON.stringify(state.locations), true);
+  renderLocations();
+  populateLocationSelects();
+  toast(loc + ' removed');
+}
+
+document.getElementById('addLocBtn').addEventListener('click', async ()=>{
+  const input = document.getElementById('newLocInput');
+  const val = input.value.trim();
+  if(!val) return;
+  if(state.locations.includes(val)){ toast('That location already exists'); return; }
+  state.locations.push(val);
+  await sSet('locations', JSON.stringify(state.locations), true);
+  input.value='';
+  renderLocations();
+  populateLocationSelects();
+  toast(val + ' added');
+});
+
+/* ---------------- Camera / scanning ---------------- */
+const video = document.getElementById('scanVideo');
+const scanStatus = document.getElementById('scanStatus');
+let scanCanvas = document.createElement('canvas');
+let scanCtx = scanCanvas.getContext('2d');
+let rafId = null;
+
+async function startCamera(){
+  if(state.cameraStream) return;
+  scanStatus.textContent = 'Requesting camera access…';
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    state.cameraStream = stream;
+    video.srcObject = stream;
+    await video.play();
+    state.scanning = true;
+    scanStatus.textContent = 'Point camera at a QR tag';
+    document.getElementById('toggleCamBtn').textContent = 'Stop camera';
+    tickScan();
+  }catch(e){
+    scanStatus.textContent = 'Camera unavailable — use the manual field below';
+  }
+}
+
+function stopCamera(){
+  state.scanning = false;
+  if(rafId) cancelAnimationFrame(rafId);
+  if(state.cameraStream){
+    state.cameraStream.getTracks().forEach(t=>t.stop());
+    state.cameraStream = null;
+  }
+  document.getElementById('toggleCamBtn').textContent = 'Start camera';
+}
+
+document.getElementById('toggleCamBtn').addEventListener('click', ()=>{
+  if(state.cameraStream) stopCamera(); else startCamera();
+});
+
+function tickScan(){
+  if(!state.scanning) return;
+  if(video.readyState === video.HAVE_ENOUGH_DATA){
+    scanCanvas.width = video.videoWidth;
+    scanCanvas.height = video.videoHeight;
+    scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
+    const imageData = scanCtx.getImageData(0,0,scanCanvas.width,scanCanvas.height);
+    const code = jsQR(imageData.data, imageData.width, imageData.height);
+    if(code && code.data){
+      handleScanResult(code.data);
+      return;
+    }
+  }
+  rafId = requestAnimationFrame(tickScan);
+}
+
+function handleScanResult(data){
+  let id = data;
+  if(data.startsWith('PROVQR:')) id = data.slice(7);
+  scanStatus.textContent = 'Found: ' + id;
+  const item = findItem(id);
+  if(item){
+    stopCamera();
+    openItemModal(id);
+  } else {
+    toast('No item found for ' + id);
+    rafId = requestAnimationFrame(tickScan);
+  }
+}
+
+document.getElementById('manualLookupBtn').addEventListener('click', doManualLookup);
+document.getElementById('manualId').addEventListener('keydown', e=>{ if(e.key==='Enter') doManualLookup(); });
+function doManualLookup(){
+  const val = document.getElementById('manualId').value.trim().toUpperCase();
+  if(!val) return;
+  const item = findItem(val);
+  if(item){ openItemModal(val); document.getElementById('manualId').value=''; }
+  else toast('No item found for ' + val);
+}
+
+/* ---------------- Init ---------------- */
+(async function init(){
+  await loadLocations();
+  populateLocationSelects();
+  await loadItems();
+  renderLocations();
+})();
+
+})();
+</script>
+</body>
+</html>
