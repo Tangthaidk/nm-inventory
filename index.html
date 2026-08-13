@@ -973,11 +973,15 @@ function openItemModal(id){
     </div>
   `;
 
+  const metaLineHtml = readOnly
+    ? `<div class="loc-label" style="font-size:12.5px;">Category: ${esc(item.category)||'—'}</div>`
+    : `<div class="loc-label" style="font-size:12.5px;">Category: ${esc(item.category)||'—'} &nbsp;·&nbsp; Location: ${esc(item.location)}</div>`;
+
   document.getElementById('modalBody').innerHTML = `
     <div class="modal-photos">${photosHtml}</div>
     <div class="card-price" style="font-size:17px;">${money(item.price)}</div>
     <div class="desc">${esc(item.description) || 'No description added.'}</div>
-    <div class="loc-label" style="font-size:12.5px;">Category: ${esc(item.category)||'—'} &nbsp;·&nbsp; Location: ${esc(item.location)}</div>
+    ${metaLineHtml}
     ${tagsSectionHtml}
     ${editSectionsHtml}
   `;
