@@ -335,7 +335,12 @@
       <button data-tab="scan">Scan</button>
       <button data-tab="locations">Locations</button>
     </nav>
-    <div class="count-pill" id="headerCount">— items</div>
+    <div style="display:flex;align-items:center;gap:10px;">
+      <div class="count-pill" id="headerCount">— items</div>
+      <button class="btn btn-outline small" id="staffSignInBtn" style="display:none;">Staff sign in</button>
+      <span class="count-pill" id="staffBadge" style="display:none;">Staff</span>
+      <button class="btn btn-outline small" id="staffSignOutBtn" style="display:none;">Sign out</button>
+    </div>
   </header>
 
   <!-- INVENTORY -->
@@ -358,6 +363,11 @@
     <div class="empty-state" id="emptyState" style="display:none;">
       <div class="serif">No pieces here yet</div>
       <div>Add your first item, or adjust your filters.</div>
+    </div>
+    <div class="empty-state" id="publicLockState" style="display:none;">
+      <div class="serif">Staff area</div>
+      <div style="margin-bottom:14px;">The full inventory is only visible to staff. If you scanned an item tag, its details open automatically.</div>
+      <button class="btn btn-brass small" id="publicSignInBtn">Staff sign in</button>
     </div>
   </section>
 
@@ -470,6 +480,29 @@
 </div>
 
 <div id="print-area"><div class="print-labels" id="printLabels"></div></div>
+
+<!-- Staff sign-in modal -->
+<div class="overlay" id="signInOverlay">
+  <div class="modal" style="max-width:360px;">
+    <div class="modal-header">
+      <div class="modal-title-row"><span class="serif" style="font-size:17px;font-weight:600;">Staff sign in</span></div>
+      <button class="modal-close" id="closeSignInBtn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>Email</label>
+        <input type="text" id="staffEmail" placeholder="you@example.com" autocapitalize="off" autocorrect="off">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" id="staffPassword" placeholder="••••••••">
+      </div>
+      <div class="helper-note" id="signInError" style="color:var(--rust);display:none;"></div>
+      <button class="btn btn-primary" id="submitSignInBtn" style="width:100%;margin-top:6px;">Sign in</button>
+      <div class="helper-note" style="margin-top:10px;">Staff accounts are created by the shop owner in the Firebase console — this isn't a public sign-up.</div>
+    </div>
+  </div>
+</div>
 
 <div class="toast" id="toast"></div>
 
@@ -588,7 +621,8 @@ let state = {
   activeTab: 'inventory',
   cameraStream: null,
   scanning: false,
-  currentItemId: null
+  currentItemId: null,
+  isStaff: false
 };
 
 /* ---------------- Toast ---------------- */
@@ -606,6 +640,7 @@ document.querySelectorAll('nav.tabs button').forEach(btn=>{
   btn.addEventListener('click', ()=> switchTab(btn.dataset.tab));
 });
 function switchTab(tab){
+  if(!state.isStaff && tab!=='inventory'){ return; } // staff-only tabs
   state.activeTab = tab;
   document.querySelectorAll('nav.tabs button').forEach(b=>b.classList.toggle('active', b.dataset.tab===tab));
   document.querySelectorAll('.view').forEach(v=>v.classList.remove('active'));
@@ -887,8 +922,9 @@ function extractItemId(data){
   return data;
 }
 
-function openItemModal(id, readOnly){
+function openItemModal(id){
   const item = findItem(id);
+  const readOnly = !state.isStaff;
   if(!item){ toast('Item not found: '+id); return; }
   state.currentItemId = id;
 
@@ -1228,22 +1264,106 @@ function doManualLookup(){
   else toast('No item found for ' + val);
 }
 
-/* ---------------- Init ---------------- */
-(async function init(){
+/* ---------------- Staff sign-in / sign-out ----------------
+   Everyone gets automatic anonymous access (needed just to read a single
+   scanned item). Staff are the only accounts with a real email/password —
+   created ahead of time by the shop owner in the Firebase console, not
+   through any sign-up form in this app. Firestore security rules (set up
+   separately in the Firebase console) are what actually enforce this on
+   the backend; hiding buttons here is just the matching UI. */
+function updateStaffUI(){
+  const isStaff = state.isStaff;
+  document.getElementById('staffSignInBtn').style.display = isStaff ? 'none' : 'inline-flex';
+  document.getElementById('staffBadge').style.display = isStaff ? 'inline-block' : 'none';
+  document.getElementById('staffSignOutBtn').style.display = isStaff ? 'inline-flex' : 'none';
+  document.querySelector('nav.tabs button[data-tab="add"]').style.display = isStaff ? '' : 'none';
+  document.querySelector('nav.tabs button[data-tab="scan"]').style.display = isStaff ? '' : 'none';
+  document.querySelector('nav.tabs button[data-tab="locations"]').style.display = isStaff ? '' : 'none';
+}
+
+function openSignIn(){
+  document.getElementById('signInError').style.display = 'none';
+  document.getElementById('staffEmail').value = '';
+  document.getElementById('staffPassword').value = '';
+  document.getElementById('signInOverlay').classList.add('active');
+}
+document.getElementById('staffSignInBtn').addEventListener('click', openSignIn);
+document.getElementById('publicSignInBtn').addEventListener('click', openSignIn);
+document.getElementById('closeSignInBtn').addEventListener('click', ()=>{
+  document.getElementById('signInOverlay').classList.remove('active');
+});
+document.getElementById('signInOverlay').addEventListener('click', e=>{
+  if(e.target.id==='signInOverlay') e.currentTarget.classList.remove('active');
+});
+
+document.getElementById('submitSignInBtn').addEventListener('click', async ()=>{
+  const email = document.getElementById('staffEmail').value.trim();
+  const pw = document.getElementById('staffPassword').value;
+  const errEl = document.getElementById('signInError');
+  errEl.style.display = 'none';
+  if(!email || !pw){ errEl.textContent = 'Enter both email and password.'; errEl.style.display='block'; return; }
+  try{
+    await firebase.auth().signInWithEmailAndPassword(email, pw);
+    document.getElementById('signInOverlay').classList.remove('active');
+    toast('Signed in as staff');
+    await enterStaffMode();
+  }catch(e){
+    errEl.textContent = e.message || 'Sign-in failed.';
+    errEl.style.display = 'block';
+  }
+});
+
+document.getElementById('staffSignOutBtn').addEventListener('click', async ()=>{
+  await firebase.auth().signOut();
+  location.reload();
+});
+
+async function enterStaffMode(){
+  state.isStaff = true;
+  updateStaffUI();
+  document.getElementById('publicLockState').style.display = 'none';
   await loadLocations();
   populateLocationSelects();
   await loadItems();
   renderLocations();
+}
 
-  // If this page was opened from a scanned tag (?item=ID), jump straight
-  // to that item in a read-only view — no edit buttons for random scanners.
+/* ---------------- Init ---------------- */
+(async function init(){
+  await ensureAuth();
+  const user = firebase.auth().currentUser;
+  state.isStaff = !!(user && !user.isAnonymous);
+  updateStaffUI();
+
   const params = new URLSearchParams(window.location.search);
   const linkedId = params.get('item');
-  if(linkedId){
-    if(findItem(linkedId)){
-      openItemModal(linkedId, true);
+
+  if(state.isStaff){
+    await loadLocations();
+    populateLocationSelects();
+    await loadItems();
+    renderLocations();
+    if(linkedId){
+      if(findItem(linkedId)) openItemModal(linkedId);
+      else toast('No item found for ' + linkedId);
+    }
+  } else {
+    // Guest: no full inventory listing — only a direct single-item lookup
+    // if they arrived via a scanned tag's link.
+    document.getElementById('loadingInv').style.display = 'none';
+    if(linkedId){
+      const raw = await sGet('item:'+linkedId, true);
+      if(raw){
+        try{
+          state.items = [JSON.parse(raw)];
+          openItemModal(linkedId);
+        }catch(e){ toast('Could not load that item'); }
+      } else {
+        toast('No item found for ' + linkedId);
+        document.getElementById('publicLockState').style.display = 'block';
+      }
     } else {
-      toast('No item found for ' + linkedId);
+      document.getElementById('publicLockState').style.display = 'block';
     }
   }
 })();
