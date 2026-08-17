@@ -10,6 +10,9 @@
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-auth-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore-compat.js"></script>
 <style>
   :root{
     --bg:#EDE6D6;
@@ -310,6 +313,15 @@
   .helper-note{font-size:12px;color:var(--ink-soft);margin-top:4px;}
   .loading-msg{text-align:center;padding:60px;color:var(--ink-soft);font-family:'IBM Plex Mono',monospace;font-size:13px;}
 
+  /* ---------- Auth ---------- */
+  .auth-area{display:flex;align-items:center;gap:10px;}
+  .auth-status{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--ink-soft);display:flex;align-items:center;gap:6px;}
+  .auth-status .dot{width:7px;height:7px;border-radius:50%;background:var(--sage);}
+  .auth-status.guest .dot{background:var(--line-strong);}
+  .locked-panel{text-align:center;padding:60px 20px;color:var(--ink-soft);border:1px dashed var(--line-strong);border-radius:12px;}
+  .locked-panel .serif{font-size:19px;color:var(--ink);margin-bottom:8px;}
+  .staff-hint{font-size:12px;color:var(--ink-soft);margin-top:10px;}
+
   /* ---------- Listing details / 1stDibs description ---------- */
   .listing-details{margin:16px 0;border-top:1px solid var(--line);padding-top:14px;}
   .listing-details h4{font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-soft);margin:0 0 10px;display:flex;justify-content:space-between;align-items:center;}
@@ -321,10 +333,7 @@
   .listing-edit-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px;}
   .listing-edit-grid .field{margin-bottom:0;}
   .listing-edit-grid .field.full{grid-column:1/-1;}
-  .gen-desc-wrap{margin-top:14px;}
-  .gen-desc-wrap textarea{min-height:140px;font-size:13.5px;line-height:1.5;}
-  .gen-desc-actions{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;}
-  .gen-status{font-family:'IBM Plex Mono',monospace;font-size:12px;color:var(--ink-soft);margin-top:8px;}
+  .inline-actions{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;}
 </style>
 </head>
 <body>
@@ -344,6 +353,10 @@
       <button data-tab="scan">Scan</button>
       <button data-tab="locations">Locations</button>
     </nav>
+    <div class="auth-area">
+      <div class="auth-status guest" id="authStatus"><span class="dot"></span><span id="authStatusText">Guest</span></div>
+      <button class="btn btn-outline small" id="authActionBtn">Staff sign in</button>
+    </div>
     <div class="count-pill" id="headerCount">— items</div>
   </header>
 
@@ -372,7 +385,7 @@
 
   <!-- ADD ITEM -->
   <section class="view" id="view-add">
-    <div class="panel">
+    <div class="panel" id="addPanel">
       <div class="panel-title">Add a piece</div>
       <div class="form-grid">
         <div>
@@ -443,6 +456,11 @@
       <button class="btn btn-primary" id="saveItemBtn">Save piece &amp; generate QR tag</button>
       <div class="helper-note" style="margin-top:10px;">This inventory is shared — everyone on your team who opens this app sees the same items.</div>
     </div>
+    <div class="locked-panel" id="addLockedPanel" style="display:none;">
+      <div class="serif">Staff sign-in required</div>
+      <div>Sign in with your staff account to add pieces to the inventory.</div>
+      <button class="btn btn-brass" id="addLockedSignInBtn" style="margin-top:16px;">Staff sign in</button>
+    </div>
   </section>
 
   <!-- SCAN -->
@@ -469,7 +487,7 @@
     <div class="panel">
       <div class="panel-title">Warehouses &amp; locations</div>
       <div id="locList"></div>
-      <div class="add-loc-row">
+      <div class="add-loc-row" id="addLocRow">
         <input type="text" id="newLocInput" placeholder="New location name">
         <button class="btn btn-brass" id="addLocBtn">Add location</button>
       </div>
@@ -504,28 +522,83 @@
 
 <div id="print-area"><div class="print-labels" id="printLabels"></div></div>
 
+<!-- Staff sign-in modal -->
+<div class="overlay" id="authOverlay">
+  <div class="modal" style="max-width:360px;">
+    <div class="modal-header">
+      <div class="modal-title-row"><span class="serif" style="font-size:17px;font-weight:600;">Staff sign in</span></div>
+      <button class="modal-close" id="closeAuthBtn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>Email</label>
+        <input type="text" id="authEmail" placeholder="you@example.com">
+      </div>
+      <div class="field">
+        <label>Password</label>
+        <input type="password" id="authPassword" placeholder="••••••••">
+      </div>
+      <div class="helper-note" id="authError" style="color:var(--rust);min-height:16px;"></div>
+      <button class="btn btn-primary" id="authSubmitBtn" style="width:100%;margin-top:6px;">Sign in</button>
+      <div class="helper-note" style="margin-top:10px;">Staff accounts are created by an admin — there's no public sign-up.</div>
+    </div>
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
 (function(){
 "use strict";
 
-/* ---------------- Storage helpers ---------------- */
+/* ---------------- Firebase init ---------------- */
+const firebaseConfig = {
+  apiKey: "AIzaSyDigae48aLfgc8MH5FrIygOB7L_X_bDk88",
+  authDomain: "nminventory-4.firebaseapp.com",
+  projectId: "nminventory-4",
+  storageBucket: "nminventory-4.firebasestorage.app",
+  messagingSenderId: "836687851930",
+  appId: "1:836687851930:web:876e2627f8dbf9e41bca23"
+};
+firebase.initializeApp(firebaseConfig);
+const auth = firebase.auth();
+const db = firebase.firestore();
+
+/* ---------------- Storage adapter (Firestore-backed) ---------------- */
+function keyToRef(key){
+  if(key.startsWith('item:')){
+    return db.collection('items').doc(key.slice(5));
+  }
+  if(key === 'locations'){
+    return db.collection('meta').doc('locations');
+  }
+  return db.collection('misc').doc(key.replace(/[:/]/g,'_'));
+}
 async function sGet(key, shared){
-  try{ const r = await window.storage.get(key, shared); return r ? r.value : null; }
-  catch(e){ return null; }
+  try{
+    const snap = await keyToRef(key).get();
+    if(!snap.exists) return null;
+    return snap.data().value;
+  }catch(e){ console.error('get failed', key, e); return null; }
 }
 async function sSet(key, value, shared){
-  try{ return await window.storage.set(key, value, shared); }
-  catch(e){ console.error('storage set failed', e); return null; }
+  try{
+    await keyToRef(key).set({ value });
+    return true;
+  }catch(e){ console.error('set failed', key, e); return null; }
 }
 async function sDelete(key, shared){
-  try{ return await window.storage.delete(key, shared); }
-  catch(e){ return null; }
+  try{ await keyToRef(key).delete(); return true; }
+  catch(e){ console.error('delete failed', key, e); return null; }
 }
 async function sList(prefix, shared){
-  try{ const r = await window.storage.list(prefix, shared); return r ? r.keys : []; }
-  catch(e){ return []; }
+  try{
+    if(prefix === 'item:'){
+      const snap = await db.collection('items').get();
+      return snap.docs.map(d=>'item:'+d.id);
+    }
+    return [];
+  }catch(e){ console.error('list failed', prefix, e); return []; }
 }
 
 const DEFAULT_LOCATIONS = ["The Shop – New York City","The Cave","House","Other"];
@@ -536,8 +609,12 @@ let state = {
   activeTab: 'inventory',
   cameraStream: null,
   scanning: false,
-  currentItemId: null
+  currentItemId: null,
+  dataLoaded: false
 };
+
+let currentUser = null;
+let isStaff = false;
 
 /* ---------------- Toast ---------------- */
 let toastTimer;
@@ -548,6 +625,89 @@ function toast(msg){
   clearTimeout(toastTimer);
   toastTimer = setTimeout(()=>t.classList.remove('show'), 2200);
 }
+
+/* ---------------- Auth ---------------- */
+function requireStaff(){
+  if(!isStaff){
+    toast('Sign in as staff to make changes');
+    openAuthModal();
+    return false;
+  }
+  return true;
+}
+
+function openAuthModal(){
+  document.getElementById('authEmail').value='';
+  document.getElementById('authPassword').value='';
+  document.getElementById('authError').textContent='';
+  document.getElementById('authOverlay').classList.add('active');
+}
+document.getElementById('closeAuthBtn').addEventListener('click', ()=>{
+  document.getElementById('authOverlay').classList.remove('active');
+});
+document.getElementById('authOverlay').addEventListener('click', e=>{
+  if(e.target.id==='authOverlay') e.currentTarget.classList.remove('active');
+});
+document.getElementById('authActionBtn').addEventListener('click', ()=>{
+  if(isStaff){ auth.signOut(); } else { openAuthModal(); }
+});
+document.getElementById('addLockedSignInBtn').addEventListener('click', openAuthModal);
+document.getElementById('authSubmitBtn').addEventListener('click', doStaffSignIn);
+document.getElementById('authPassword').addEventListener('keydown', e=>{ if(e.key==='Enter') doStaffSignIn(); });
+
+async function doStaffSignIn(){
+  const email = document.getElementById('authEmail').value.trim();
+  const pw = document.getElementById('authPassword').value;
+  const errEl = document.getElementById('authError');
+  if(!email || !pw){ errEl.textContent = 'Enter your email and password.'; return; }
+  const btn = document.getElementById('authSubmitBtn');
+  btn.disabled = true; btn.textContent = 'Signing in…';
+  try{
+    await auth.signInWithEmailAndPassword(email, pw);
+    document.getElementById('authOverlay').classList.remove('active');
+    toast('Signed in');
+  }catch(e){
+    errEl.textContent = 'Could not sign in — check your email and password.';
+  }finally{
+    btn.disabled = false; btn.textContent = 'Sign in';
+  }
+}
+
+function applyAuthGating(){
+  const statusWrap = document.getElementById('authStatus');
+  const statusText = document.getElementById('authStatusText');
+  const actionBtn = document.getElementById('authActionBtn');
+  if(isStaff){
+    statusWrap.classList.remove('guest');
+    statusText.textContent = currentUser.email || 'Staff';
+    actionBtn.textContent = 'Sign out';
+  } else {
+    statusWrap.classList.add('guest');
+    statusText.textContent = 'Guest';
+    actionBtn.textContent = 'Staff sign in';
+  }
+  document.getElementById('addPanel').style.display = isStaff ? '' : 'none';
+  document.getElementById('addLockedPanel').style.display = isStaff ? 'none' : 'block';
+  document.getElementById('addLocRow').style.display = isStaff ? 'flex' : 'none';
+  renderLocations();
+  if(state.currentItemId && document.getElementById('itemOverlay').classList.contains('active')){
+    openItemModal(state.currentItemId);
+  }
+}
+
+auth.onAuthStateChanged(async (user)=>{
+  if(!user){
+    try{ await auth.signInAnonymously(); }catch(e){ console.error('anon sign-in failed', e); }
+    return;
+  }
+  currentUser = user;
+  isStaff = !user.isAnonymous;
+  applyAuthGating();
+  if(!state.dataLoaded){
+    state.dataLoaded = true;
+    init();
+  }
+});
 
 /* ---------------- Tabs ---------------- */
 document.querySelectorAll('nav.tabs button').forEach(btn=>{
@@ -564,10 +724,15 @@ function switchTab(tab){
 
 /* ---------------- ID generation ---------------- */
 async function nextItemId(){
-  let counter = await sGet('meta:counter', true);
-  let n = counter ? parseInt(counter,10) : 0;
-  n += 1;
-  await sSet('meta:counter', String(n), true);
+  const ref = db.collection('meta').doc('counter');
+  const n = await db.runTransaction(async (tx)=>{
+    const doc = await tx.get(ref);
+    let cur = 0;
+    if(doc.exists && doc.data().value) cur = parseInt(doc.data().value,10) || 0;
+    cur += 1;
+    tx.set(ref, {value:String(cur)});
+    return cur;
+  });
   return 'AN-' + String(n).padStart(4,'0');
 }
 
@@ -576,7 +741,7 @@ async function loadLocations(){
   let raw = await sGet('locations', true);
   if(!raw){
     state.locations = DEFAULT_LOCATIONS.slice();
-    await sSet('locations', JSON.stringify(state.locations), true);
+    if(isStaff) await sSet('locations', JSON.stringify(state.locations), true);
   } else {
     try{ state.locations = JSON.parse(raw); }catch(e){ state.locations = DEFAULT_LOCATIONS.slice(); }
   }
@@ -778,6 +943,7 @@ function renderThumbs(){
 
 /* ---------------- Save item ---------------- */
 document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
+  if(!requireStaff()) return;
   const name = document.getElementById('f-name').value.trim();
   if(!name){ toast('Please enter a name for the piece'); return; }
   const btn = document.getElementById('saveItemBtn');
@@ -799,7 +965,6 @@ document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
     dimensions: document.getElementById('f-dimensions').value.trim(),
     provenance: document.getElementById('f-provenance').value.trim(),
     condition: document.getElementById('f-condition').value.trim(),
-    listingDescription: '',
     createdAt: Date.now(),
     history: [{ts: Date.now(), text: `Added to inventory at ${document.getElementById('f-location').value || state.locations[0] || 'unassigned location'}`}]
   };
@@ -853,6 +1018,11 @@ function openItemModal(id){
     <div class="history-item"><b>${new Date(h.ts).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</b> — ${esc(h.text)}</div>
   `).join('') || '<div class="history-item">No history yet.</div>';
 
+  const tagChips = (item.tags||[]).map((t,i)=> isStaff
+    ? `<span class="tag-chip removable" data-tag-i="${i}">${esc(t)} <button type="button" data-rm-tag="${i}">&times;</button></span>`
+    : `<span class="tag-chip on-card">${esc(t)}</span>`
+  ).join('');
+
   document.getElementById('modalBody').innerHTML = `
     <div class="modal-photos">${photosHtml}</div>
     <div class="card-price" style="font-size:17px;">${money(item.price)}</div>
@@ -860,29 +1030,24 @@ function openItemModal(id){
     <div class="loc-label" style="font-size:12.5px;">Category: ${esc(item.category)||'—'} &nbsp;·&nbsp; Location: ${esc(item.location)}</div>
 
     <div class="tag-input-wrap" id="modalTagWrap" style="margin:12px 0;">
-      ${(item.tags||[]).map((t,i)=>`<span class="tag-chip removable" data-tag-i="${i}">${esc(t)} <button type="button" data-rm-tag="${i}">&times;</button></span>`).join('')}
-      <input type="text" id="modalTagInput" placeholder="Add a tag…">
+      ${tagChips}
+      ${isStaff ? '<input type="text" id="modalTagInput" placeholder="Add a tag…">' : ''}
     </div>
 
     <div class="listing-details" id="listingDetailsBlock">${renderListingDetailsView(item)}</div>
 
-    <div class="gen-desc-wrap">
-      <button class="btn btn-brass small" id="genDescBtn">✦ Generate 1stDibs description</button>
-      <div id="genDescStatus"></div>
-      ${item.listingDescription ? renderGenDescResult(item.listingDescription) : `<div id="genDescResultHolder"></div>`}
-    </div>
-
     <div class="action-grid">
-      ${item.status!=='sold' ? '<button class="btn btn-rust small" id="markSoldBtn">Mark sold</button>' : '<button class="btn btn-sage small" id="markAvailBtn">Mark available</button>'}
-      ${item.status==='available' ? '<button class="btn btn-outline small" id="markReservedBtn">Mark reserved</button>' : ''}
       <button class="btn btn-brass small" id="printTagBtn">Print QR tag</button>
-      <button class="btn btn-outline small" id="deleteItemBtn">Delete</button>
+      ${isStaff ? (item.status!=='sold' ? '<button class="btn btn-rust small" id="markSoldBtn">Mark sold</button>' : '<button class="btn btn-sage small" id="markAvailBtn">Mark available</button>') : ''}
+      ${isStaff && item.status==='available' ? '<button class="btn btn-outline small" id="markReservedBtn">Mark reserved</button>' : ''}
+      ${isStaff ? '<button class="btn btn-outline small" id="deleteItemBtn">Delete</button>' : ''}
     </div>
 
+    ${isStaff ? `
     <div class="move-row">
       <select id="moveLocSelect">${locOptions}</select>
       <button class="btn btn-primary small" id="moveBtn">Move item</button>
-    </div>
+    </div>` : ''}
 
     <div class="history">
       <h4>History</h4>
@@ -898,19 +1063,23 @@ function openItemModal(id){
   if(availBtn) availBtn.addEventListener('click', ()=>updateStatus(item.id,'available'));
   const resBtn = document.getElementById('markReservedBtn');
   if(resBtn) resBtn.addEventListener('click', ()=>updateStatus(item.id,'reserved'));
-  document.getElementById('moveBtn').addEventListener('click', ()=>moveItem(item.id));
+  const moveBtn = document.getElementById('moveBtn');
+  if(moveBtn) moveBtn.addEventListener('click', ()=>moveItem(item.id));
   document.getElementById('printTagBtn').addEventListener('click', ()=>openLabelModal(item));
-  document.getElementById('deleteItemBtn').addEventListener('click', ()=>deleteItem(item.id));
+  const deleteBtn = document.getElementById('deleteItemBtn');
+  if(deleteBtn) deleteBtn.addEventListener('click', ()=>deleteItem(item.id));
 
   const modalTagInput = document.getElementById('modalTagInput');
-  modalTagInput.addEventListener('keydown', e=>{
-    if(e.key==='Enter' || e.key===','){
-      e.preventDefault();
-      const v = modalTagInput.value.trim().replace(/,$/,'');
-      if(v) addTagToItem(item.id, v);
-      modalTagInput.value='';
-    }
-  });
+  if(modalTagInput){
+    modalTagInput.addEventListener('keydown', e=>{
+      if(e.key==='Enter' || e.key===','){
+        e.preventDefault();
+        const v = modalTagInput.value.trim().replace(/,$/,'');
+        if(v) addTagToItem(item.id, v);
+        modalTagInput.value='';
+      }
+    });
+  }
   document.querySelectorAll('#modalTagWrap button[data-rm-tag]').forEach(btn=>{
     btn.addEventListener('click', ()=>{
       const i = parseInt(btn.dataset.rmTag,10);
@@ -919,9 +1088,6 @@ function openItemModal(id){
   });
 
   wireListingDetails(item.id);
-  const genBtn = document.getElementById('genDescBtn');
-  if(genBtn) genBtn.addEventListener('click', ()=>generateListingDescription(item.id));
-  wireGenDescResult(item.id);
 }
 
 /* ---------------- Listing details (materials/dimensions/period/condition/provenance) ---------------- */
@@ -934,7 +1100,7 @@ function renderListingDetailsView(item){
     ['Condition', item.condition]
   ];
   return `
-    <h4>Listing details <button class="btn btn-outline small" id="editListingBtn" type="button">Edit</button></h4>
+    <h4>Listing details ${isStaff ? '<button class="btn btn-outline small" id="editListingBtn" type="button">Edit</button>' : ''}</h4>
     <div class="listing-grid">
       ${rows.map(([label,val])=>`
         <div class="lf">
@@ -954,7 +1120,7 @@ function renderListingDetailsEdit(item){
       <div class="field"><label>Provenance / Maker</label><input type="text" id="ld-provenance" value="${esc(item.provenance||'')}"></div>
       <div class="field full"><label>Condition notes</label><input type="text" id="ld-condition" value="${esc(item.condition||'')}"></div>
     </div>
-    <div class="gen-desc-actions">
+    <div class="inline-actions">
       <button class="btn btn-primary small" id="saveListingBtn" type="button">Save details</button>
       <button class="btn btn-outline small" id="cancelListingBtn" type="button">Cancel</button>
     </div>`;
@@ -975,6 +1141,7 @@ function wireListingDetails(id){
 }
 
 async function saveListingDetails(id){
+  if(!requireStaff()) return;
   const item = findItem(id);
   if(!item) return;
   item.materials = document.getElementById('ld-materials').value.trim();
@@ -989,93 +1156,8 @@ async function saveListingDetails(id){
   toast('Listing details saved');
 }
 
-/* ---------------- 1stDibs description generation ---------------- */
-function renderGenDescResult(text){
-  return `
-    <div id="genDescResultHolder">
-      <textarea id="genDescText">${esc(text)}</textarea>
-      <div class="gen-desc-actions">
-        <button class="btn btn-outline small" id="copyDescBtn" type="button">Copy to clipboard</button>
-        <button class="btn btn-primary small" id="saveDescBtn" type="button">Save to item</button>
-      </div>
-    </div>`;
-}
-
-function wireGenDescResult(id){
-  const copyBtn = document.getElementById('copyDescBtn');
-  if(copyBtn) copyBtn.addEventListener('click', ()=>{
-    const ta = document.getElementById('genDescText');
-    navigator.clipboard.writeText(ta.value).then(()=>toast('Description copied')).catch(()=>toast('Could not copy — select and copy manually'));
-  });
-  const saveBtn = document.getElementById('saveDescBtn');
-  if(saveBtn) saveBtn.addEventListener('click', async ()=>{
-    const item = findItem(id);
-    if(!item) return;
-    item.listingDescription = document.getElementById('genDescText').value;
-    item.history = item.history || [];
-    item.history.push({ts: Date.now(), text:'1stDibs description saved'});
-    await sSet('item:'+id, JSON.stringify(item), true);
-    await loadItems();
-    toast('Description saved to item');
-  });
-}
-
-async function generateListingDescription(id){
-  const item = findItem(id);
-  if(!item) return;
-  const btn = document.getElementById('genDescBtn');
-  const statusEl = document.getElementById('genDescStatus');
-  btn.disabled = true;
-  statusEl.innerHTML = `<div class="gen-status">Drafting description from photos and details…</div>`;
-
-  const promptParts = [];
-  promptParts.push(`You are an experienced antiques dealer writing a listing description for 1stDibs. Write a polished, professional description (150-250 words) for the following piece. Use the photos to describe visual details (form, ornamentation, materials, patina, condition) accurately. Do not invent facts you cannot see or that aren't given — if a specific date, maker, or provenance detail is not provided, describe the piece in general stylistic/period terms instead of asserting specifics you don't have. Do not use markdown formatting, just plain prose paragraphs. Do not include a title line, just the description body.`);
-  promptParts.push(`\nItem details provided by the dealer:`);
-  promptParts.push(`Name: ${item.name||'Unknown'}`);
-  if(item.category) promptParts.push(`Category: ${item.category}`);
-  if(item.materials) promptParts.push(`Materials: ${item.materials}`);
-  if(item.period) promptParts.push(`Period/Style: ${item.period}`);
-  if(item.dimensions) promptParts.push(`Dimensions: ${item.dimensions}`);
-  if(item.provenance) promptParts.push(`Provenance/Maker: ${item.provenance}`);
-  if(item.condition) promptParts.push(`Condition notes: ${item.condition}`);
-  if(item.description) promptParts.push(`Internal notes: ${item.description}`);
-  if(item.tags && item.tags.length) promptParts.push(`Tags: ${item.tags.join(', ')}`);
-
-  const content = [];
-  (item.photos||[]).slice(0,4).forEach(p=>{
-    const match = p.match(/^data:(image\/\w+);base64,(.*)$/);
-    if(match){
-      content.push({type:'image', source:{type:'base64', media_type: match[1], data: match[2]}});
-    }
-  });
-  content.push({type:'text', text: promptParts.join('\n')});
-
-  try{
-    const response = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 1000,
-        messages: [{ role: "user", content }]
-      })
-    });
-    const data = await response.json();
-    const textBlocks = (data.content||[]).filter(b=>b.type==='text').map(b=>b.text);
-    const draft = textBlocks.join('\n').trim();
-    if(!draft){ throw new Error('empty response'); }
-    statusEl.innerHTML = '';
-    document.getElementById('genDescResultHolder')?.remove();
-    document.querySelector('.gen-desc-wrap').insertAdjacentHTML('beforeend', renderGenDescResult(draft));
-    wireGenDescResult(id);
-  }catch(e){
-    statusEl.innerHTML = `<div class="gen-status">Couldn't generate a description — please try again.</div>`;
-  }finally{
-    btn.disabled = false;
-  }
-}
-
 async function addTagToItem(id, tag){
+  if(!requireStaff()) return;
   const item = findItem(id);
   if(!item) return;
   item.tags = item.tags || [];
@@ -1087,6 +1169,7 @@ async function addTagToItem(id, tag){
 }
 
 async function removeTagFromItem(id, index){
+  if(!requireStaff()) return;
   const item = findItem(id);
   if(!item || !item.tags) return;
   item.tags.splice(index,1);
@@ -1103,6 +1186,7 @@ document.getElementById('itemOverlay').addEventListener('click', e=>{
 });
 
 async function updateStatus(id, status){
+  if(!requireStaff()) return;
   const item = findItem(id);
   if(!item) return;
   item.status = status;
@@ -1115,6 +1199,7 @@ async function updateStatus(id, status){
 }
 
 async function moveItem(id){
+  if(!requireStaff()) return;
   const item = findItem(id);
   const newLoc = document.getElementById('moveLocSelect').value;
   if(!item || !newLoc || newLoc===item.location){ toast('Choose a different location'); return; }
@@ -1129,6 +1214,7 @@ async function moveItem(id){
 }
 
 async function deleteItem(id){
+  if(!requireStaff()) return;
   if(!confirm('Delete this item permanently? This cannot be undone.')) return;
   await sDelete('item:'+id, true);
   document.getElementById('itemOverlay').classList.remove('active');
@@ -1190,7 +1276,7 @@ function renderLocations(){
         <div class="loc-name">${esc(l)}</div>
         <div class="loc-count">${counts[l]||0} item${(counts[l]||0)===1?'':'s'}</div>
       </div>
-      <button class="btn btn-outline small" data-loc="${esc(l)}">Remove</button>
+      ${isStaff ? `<button class="btn btn-outline small" data-loc="${esc(l)}">Remove</button>` : ''}
     </div>`).join('');
   holder.querySelectorAll('button[data-loc]').forEach(b=>{
     b.addEventListener('click', ()=>removeLocation(b.dataset.loc, counts[b.dataset.loc]||0));
@@ -1198,6 +1284,7 @@ function renderLocations(){
 }
 
 async function removeLocation(loc, count){
+  if(!requireStaff()) return;
   if(count>0){ toast(`Move the ${count} item(s) out of ${loc} before removing it`); return; }
   state.locations = state.locations.filter(l=>l!==loc);
   await sSet('locations', JSON.stringify(state.locations), true);
@@ -1207,6 +1294,7 @@ async function removeLocation(loc, count){
 }
 
 document.getElementById('addLocBtn').addEventListener('click', async ()=>{
+  if(!requireStaff()) return;
   const input = document.getElementById('newLocInput');
   const val = input.value.trim();
   if(!val) return;
@@ -1298,12 +1386,12 @@ function doManualLookup(){
 }
 
 /* ---------------- Init ---------------- */
-(async function init(){
+async function init(){
   await loadLocations();
   populateLocationSelects();
   await loadItems();
   renderLocations();
-})();
+}
 
 })();
 </script>
