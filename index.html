@@ -601,6 +601,39 @@ async function sList(prefix, shared){
   }catch(e){ console.error('list failed', prefix, e); return []; }
 }
 
+/* ---------------- Item read/write (split public/private) ----------------
+   Public doc (items/{id}): name, category, price, description, tags,
+     photos, status, materials, period, dimensions, provenance, condition,
+     createdAt — readable by any signed-in user (incl. guests).
+   Private doc (items/{id}/priv/data): location, history — Firestore rules
+     restrict this to staff only, so guests cannot read it even directly. */
+function privRef(id){ return db.collection('items').doc(id).collection('priv').doc('data'); }
+
+async function fetchItemPublic(id){
+  const snap = await db.collection('items').doc(id).get();
+  if(!snap.exists) return null;
+  return Object.assign({id}, snap.data());
+}
+async function fetchItemPrivate(id){
+  try{
+    const snap = await privRef(id).get();
+    if(!snap.exists) return {location:'', history:[]};
+    return { location: snap.data().location || '', history: snap.data().history || [] };
+  }catch(e){
+    // permission denied for guests — expected, not an error
+    return { location: undefined, history: [] };
+  }
+}
+async function fetchItemFull(id){
+  const pub = await fetchItemPublic(id);
+  if(!pub) return null;
+  if(isStaff){
+    const priv = await fetchItemPrivate(id);
+    return Object.assign(pub, priv);
+  }
+  return pub;
+}
+
 const DEFAULT_LOCATIONS = ["The Shop – New York City","The Cave","House","Other"];
 
 let state = {
@@ -689,9 +722,11 @@ function applyAuthGating(){
   document.getElementById('addPanel').style.display = isStaff ? '' : 'none';
   document.getElementById('addLockedPanel').style.display = isStaff ? 'none' : 'block';
   document.getElementById('addLocRow').style.display = isStaff ? 'flex' : 'none';
+  document.getElementById('filterLocation').style.display = isStaff ? '' : 'none';
   renderLocations();
+  renderGrid();
   if(state.currentItemId && document.getElementById('itemOverlay').classList.contains('active')){
-    openItemModal(state.currentItemId);
+    openItemModal(state.currentItemId, state.currentItemViaScan);
   }
 }
 
@@ -749,14 +784,19 @@ async function loadLocations(){
 
 async function loadItems(){
   document.getElementById('loadingInv').style.display = 'block';
-  const keys = await sList('item:', true);
-  const items = [];
-  for(const k of keys){
-    const raw = await sGet(k, true);
-    if(raw){
-      try{ items.push(JSON.parse(raw)); }catch(e){}
-    }
+  const snap = await db.collection('items').get();
+  const items = snap.docs.map(d=>Object.assign({id:d.id}, d.data()));
+
+  if(isStaff){
+    await Promise.all(items.map(async (it)=>{
+      const priv = await fetchItemPrivate(it.id);
+      it.location = priv.location;
+      it.history = priv.history;
+    }));
+  } else {
+    items.forEach(it=>{ it.location = undefined; it.history = []; });
   }
+
   items.sort((a,b)=> (b.createdAt||0) - (a.createdAt||0));
   state.items = items;
   document.getElementById('loadingInv').style.display = 'none';
@@ -810,7 +850,7 @@ function renderGrid(){
   const tagF = document.getElementById('filterTag').value;
 
   const filtered = state.items.filter(it=>{
-    if(locF && it.location !== locF) return false;
+    if(isStaff && locF && it.location !== locF) return false;
     if(statF && it.status !== statF) return false;
     if(tagF && !(it.tags||[]).includes(tagF)) return false;
     if(q){
@@ -838,10 +878,10 @@ function renderGrid(){
       </div>
       <div class="card-body">
         <div class="card-name">${esc(it.name || 'Untitled piece')}</div>
-        <div class="card-price">${money(it.price)}</div>
+        ${isStaff ? `<div class="card-price">${money(it.price)}</div>` : `<div class="card-price" style="color:var(--ink-soft);font-size:12px;font-family:'IBM Plex Mono',monospace;">Scan tag for price</div>`}
         ${(it.tags && it.tags.length) ? `<div class="tag-chips">${it.tags.map(t=>`<span class="tag-chip on-card">${esc(t)}</span>`).join('')}</div>` : ''}
         <div class="card-meta">
-          <span class="loc-label">${esc(it.location||'—')}</span>
+          ${isStaff ? `<span class="loc-label">${esc(it.location||'—')}</span>` : '<span></span>'}
           <span class="pill ${it.status}">${esc(it.status)}</span>
         </div>
       </div>
@@ -849,7 +889,7 @@ function renderGrid(){
   }).join('');
 
   grid.querySelectorAll('.card').forEach(c=>{
-    c.addEventListener('click', ()=> openItemModal(c.dataset.id));
+    c.addEventListener('click', ()=> openItemModal(c.dataset.id, false));
   });
 }
 
@@ -950,13 +990,12 @@ document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
   btn.disabled = true; btn.textContent = 'Saving…';
 
   const id = await nextItemId();
-  const item = {
-    id,
+  const chosenLocation = document.getElementById('f-location').value || state.locations[0] || '';
+  const publicData = {
     name,
     category: document.getElementById('f-category').value.trim(),
     price: document.getElementById('f-price').value,
     description: document.getElementById('f-desc').value.trim(),
-    location: document.getElementById('f-location').value || state.locations[0] || '',
     status: 'available',
     tags: pendingTags.slice(),
     photos: pendingPhotos.slice(),
@@ -965,11 +1004,19 @@ document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
     dimensions: document.getElementById('f-dimensions').value.trim(),
     provenance: document.getElementById('f-provenance').value.trim(),
     condition: document.getElementById('f-condition').value.trim(),
-    createdAt: Date.now(),
-    history: [{ts: Date.now(), text: `Added to inventory at ${document.getElementById('f-location').value || state.locations[0] || 'unassigned location'}`}]
+    createdAt: Date.now()
+  };
+  const privateData = {
+    location: chosenLocation,
+    history: [{ts: Date.now(), text: `Added to inventory at ${chosenLocation || 'unassigned location'}`}]
   };
 
-  const ok = await sSet('item:'+id, JSON.stringify(item), true);
+  let ok = true;
+  try{
+    await db.collection('items').doc(id).set(publicData);
+    await privRef(id).set(privateData);
+  }catch(e){ console.error('save item failed', e); ok = false; }
+
   btn.disabled = false; btn.textContent = 'Save piece & generate QR tag';
 
   if(!ok){ toast('Could not save — please try again'); return; }
@@ -997,10 +1044,11 @@ document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
 /* ---------------- Item modal ---------------- */
 function findItem(id){ return state.items.find(i=>i.id===id); }
 
-function openItemModal(id){
+function openItemModal(id, viaScan){
   const item = findItem(id);
   if(!item){ toast('Item not found: '+id); return; }
   state.currentItemId = id;
+  state.currentItemViaScan = !!viaScan;
 
   document.getElementById('modalTitleRow').innerHTML = `
     <span class="serif" style="font-size:19px;font-weight:600;">${esc(item.name)}</span>
@@ -1023,11 +1071,19 @@ function openItemModal(id){
     : `<span class="tag-chip on-card">${esc(t)}</span>`
   ).join('');
 
+  const showPrice = isStaff || !!viaScan;
+  const priceHtml = showPrice
+    ? `<div class="card-price" style="font-size:17px;">${money(item.price)}</div>`
+    : `<div class="card-price" style="font-size:13px;color:var(--ink-soft);font-family:'IBM Plex Mono',monospace;">Scan this piece's QR tag to see price</div>`;
+  const metaLine = isStaff
+    ? `Category: ${esc(item.category)||'—'} &nbsp;·&nbsp; Location: ${esc(item.location)}`
+    : `Category: ${esc(item.category)||'—'}`;
+
   document.getElementById('modalBody').innerHTML = `
     <div class="modal-photos">${photosHtml}</div>
-    <div class="card-price" style="font-size:17px;">${money(item.price)}</div>
+    ${priceHtml}
     <div class="desc">${esc(item.description) || 'No description added.'}</div>
-    <div class="loc-label" style="font-size:12.5px;">Category: ${esc(item.category)||'—'} &nbsp;·&nbsp; Location: ${esc(item.location)}</div>
+    <div class="loc-label" style="font-size:12.5px;">${metaLine}</div>
 
     <div class="tag-input-wrap" id="modalTagWrap" style="margin:12px 0;">
       ${tagChips}
@@ -1037,7 +1093,7 @@ function openItemModal(id){
     <div class="listing-details" id="listingDetailsBlock">${renderListingDetailsView(item)}</div>
 
     <div class="action-grid">
-      <button class="btn btn-brass small" id="printTagBtn">Print QR tag</button>
+      ${isStaff ? '<button class="btn btn-brass small" id="printTagBtn">Print QR tag</button>' : ''}
       ${isStaff ? (item.status!=='sold' ? '<button class="btn btn-rust small" id="markSoldBtn">Mark sold</button>' : '<button class="btn btn-sage small" id="markAvailBtn">Mark available</button>') : ''}
       ${isStaff && item.status==='available' ? '<button class="btn btn-outline small" id="markReservedBtn">Mark reserved</button>' : ''}
       ${isStaff ? '<button class="btn btn-outline small" id="deleteItemBtn">Delete</button>' : ''}
@@ -1049,10 +1105,11 @@ function openItemModal(id){
       <button class="btn btn-primary small" id="moveBtn">Move item</button>
     </div>` : ''}
 
+    ${isStaff ? `
     <div class="history">
       <h4>History</h4>
       ${historyHtml}
-    </div>
+    </div>` : ''}
   `;
 
   document.getElementById('itemOverlay').classList.add('active');
@@ -1065,7 +1122,8 @@ function openItemModal(id){
   if(resBtn) resBtn.addEventListener('click', ()=>updateStatus(item.id,'reserved'));
   const moveBtn = document.getElementById('moveBtn');
   if(moveBtn) moveBtn.addEventListener('click', ()=>moveItem(item.id));
-  document.getElementById('printTagBtn').addEventListener('click', ()=>openLabelModal(item));
+  const printBtn = document.getElementById('printTagBtn');
+  if(printBtn) printBtn.addEventListener('click', ()=>openLabelModal(item));
   const deleteBtn = document.getElementById('deleteItemBtn');
   if(deleteBtn) deleteBtn.addEventListener('click', ()=>deleteItem(item.id));
 
@@ -1144,12 +1202,14 @@ async function saveListingDetails(id){
   if(!requireStaff()) return;
   const item = findItem(id);
   if(!item) return;
-  item.materials = document.getElementById('ld-materials').value.trim();
-  item.period = document.getElementById('ld-period').value.trim();
-  item.dimensions = document.getElementById('ld-dimensions').value.trim();
-  item.provenance = document.getElementById('ld-provenance').value.trim();
-  item.condition = document.getElementById('ld-condition').value.trim();
-  await sSet('item:'+id, JSON.stringify(item), true);
+  const updates = {
+    materials: document.getElementById('ld-materials').value.trim(),
+    period: document.getElementById('ld-period').value.trim(),
+    dimensions: document.getElementById('ld-dimensions').value.trim(),
+    provenance: document.getElementById('ld-provenance').value.trim(),
+    condition: document.getElementById('ld-condition').value.trim()
+  };
+  await db.collection('items').doc(id).update(updates);
   await loadItems();
   document.getElementById('listingDetailsBlock').innerHTML = renderListingDetailsView(findItem(id));
   wireListingDetails(id);
@@ -1160,22 +1220,23 @@ async function addTagToItem(id, tag){
   if(!requireStaff()) return;
   const item = findItem(id);
   if(!item) return;
-  item.tags = item.tags || [];
-  if(item.tags.includes(tag)){ return; }
-  item.tags.push(tag);
-  await sSet('item:'+id, JSON.stringify(item), true);
+  const tags = item.tags || [];
+  if(tags.includes(tag)) return;
+  tags.push(tag);
+  await db.collection('items').doc(id).update({tags});
   await loadItems();
-  openItemModal(id);
+  openItemModal(id, state.currentItemViaScan);
 }
 
 async function removeTagFromItem(id, index){
   if(!requireStaff()) return;
   const item = findItem(id);
   if(!item || !item.tags) return;
-  item.tags.splice(index,1);
-  await sSet('item:'+id, JSON.stringify(item), true);
+  const tags = item.tags.slice();
+  tags.splice(index,1);
+  await db.collection('items').doc(id).update({tags});
   await loadItems();
-  openItemModal(id);
+  openItemModal(id, state.currentItemViaScan);
 }
 
 document.getElementById('closeModalBtn').addEventListener('click', ()=>{
@@ -1189,13 +1250,13 @@ async function updateStatus(id, status){
   if(!requireStaff()) return;
   const item = findItem(id);
   if(!item) return;
-  item.status = status;
-  item.history = item.history || [];
-  item.history.push({ts: Date.now(), text: 'Marked as ' + status});
-  await sSet('item:'+id, JSON.stringify(item), true);
+  await db.collection('items').doc(id).update({status});
+  await privRef(id).set({
+    history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: 'Marked as ' + status})
+  }, {merge:true});
   await loadItems();
   toast(item.id + ' marked ' + status);
-  openItemModal(id);
+  openItemModal(id, state.currentItemViaScan);
 }
 
 async function moveItem(id){
@@ -1204,19 +1265,22 @@ async function moveItem(id){
   const newLoc = document.getElementById('moveLocSelect').value;
   if(!item || !newLoc || newLoc===item.location){ toast('Choose a different location'); return; }
   const from = item.location;
-  item.location = newLoc;
-  item.history = item.history || [];
-  item.history.push({ts: Date.now(), text: `Moved from ${from||'unassigned'} to ${newLoc}`});
-  await sSet('item:'+id, JSON.stringify(item), true);
+  await privRef(id).set({
+    location: newLoc,
+    history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: `Moved from ${from||'unassigned'} to ${newLoc}`})
+  }, {merge:true});
   await loadItems();
   toast(item.id + ' moved to ' + newLoc);
-  openItemModal(id);
+  openItemModal(id, state.currentItemViaScan);
 }
 
 async function deleteItem(id){
   if(!requireStaff()) return;
   if(!confirm('Delete this item permanently? This cannot be undone.')) return;
-  await sDelete('item:'+id, true);
+  try{
+    await privRef(id).delete();
+  }catch(e){ /* private doc may not be readable/exist in edge cases — ignore */ }
+  await db.collection('items').doc(id).delete();
   document.getElementById('itemOverlay').classList.remove('active');
   await loadItems();
   toast('Item deleted');
@@ -1368,7 +1432,7 @@ function handleScanResult(data){
   const item = findItem(id);
   if(item){
     stopCamera();
-    openItemModal(id);
+    openItemModal(id, true);
   } else {
     toast('No item found for ' + id);
     rafId = requestAnimationFrame(tickScan);
@@ -1381,7 +1445,7 @@ function doManualLookup(){
   const val = document.getElementById('manualId').value.trim().toUpperCase();
   if(!val) return;
   const item = findItem(val);
-  if(item){ openItemModal(val); document.getElementById('manualId').value=''; }
+  if(item){ openItemModal(val, true); document.getElementById('manualId').value=''; }
   else toast('No item found for ' + val);
 }
 
