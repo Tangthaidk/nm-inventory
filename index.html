@@ -1038,7 +1038,7 @@ document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
 
   await loadItems();
   toast(id + ' saved to inventory');
-  openLabelModal(item);
+  openLabelModal(Object.assign({id}, publicData));
 });
 
 /* ---------------- Item modal ---------------- */
