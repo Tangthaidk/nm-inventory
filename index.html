@@ -1295,44 +1295,58 @@ document.getElementById('labelOverlay').addEventListener('click', e=>{
 });
 
 function printLabel(item){
+  const w = window.open('', '_blank', 'width=420,height=520');
+  if(!w){ toast('Please allow pop-ups to print the label, then try again'); return; }
+  w.document.write(`
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8">
+      <title>Print label — ${esc(item.id)}</title>
+      <style>
+        *{box-sizing:border-box;}
+        body{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;margin:0;padding:20px;background:#fff;}
+        .print-label{width:2.5in;height:1.7in;border:1px dashed #999;border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:8px;}
+        .print-label img{width:90px;height:90px;}
+        .pn{font-weight:600;font-size:12px;text-align:center;font-family:Georgia,serif;}
+        .pp{font-size:11px;font-family:'Courier New',monospace;}
+        .pid{font-size:9px;color:#666;font-family:'Courier New',monospace;}
+      </style>
+    </head>
+    <body>
+      <div class="print-label">
+        <div id="qrTarget">Generating…</div>
+        <div class="pn">${esc(item.name)}</div>
+        <div class="pp">${money(item.price)}</div>
+        <div class="pid">${esc(item.id)}</div>
+      </div>
+    </body>
+    </html>
+  `);
+  w.document.close();
+
+  // Render the QR code in our own document (known-reliable), then hand the
+  // resulting image over to the popup — avoids any cross-window DOM issues.
   const qrTemp = document.createElement('div');
+  qrTemp.style.position = 'fixed';
+  qrTemp.style.left = '-9999px';
+  document.body.appendChild(qrTemp);
   new QRCode(qrTemp, {text:'PROVQR:'+item.id, width:200, height:200, colorDark:'#2A2622', colorLight:'#ffffff'});
+
   setTimeout(()=>{
     const img = qrTemp.querySelector('img') || qrTemp.querySelector('canvas');
-    const src = img.tagName==='IMG' ? img.src : img.toDataURL();
-    const w = window.open('', '_blank', 'width=420,height=520');
-    if(!w){ toast('Please allow pop-ups to print the label'); return; }
-    w.document.write(`
-      <!DOCTYPE html>
-      <html>
-      <head>
-        <meta charset="UTF-8">
-        <title>Print label — ${esc(item.id)}</title>
-        <style>
-          *{box-sizing:border-box;}
-          body{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;margin:0;padding:20px;background:#fff;}
-          .print-label{width:2.5in;height:1.7in;border:1px dashed #999;border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:8px;}
-          .print-label img{width:90px;height:90px;}
-          .pn{font-weight:600;font-size:12px;text-align:center;font-family:Georgia,serif;}
-          .pp{font-size:11px;font-family:'Courier New',monospace;}
-          .pid{font-size:9px;color:#666;font-family:'Courier New',monospace;}
-        </style>
-      </head>
-      <body>
-        <div class="print-label">
-          <img src="${src}">
-          <div class="pn">${esc(item.name)}</div>
-          <div class="pp">${money(item.price)}</div>
-          <div class="pid">${esc(item.id)}</div>
-        </div>
-        <script>
-          window.onload = function(){ window.print(); };
-        <\/script>
-      </body>
-      </html>
-    `);
-    w.document.close();
-  }, 150);
+    const src = img ? (img.tagName==='IMG' ? img.src : img.toDataURL()) : '';
+    document.body.removeChild(qrTemp);
+    const target = w.document.getElementById('qrTarget');
+    if(target && src){
+      target.outerHTML = `<img src="${src}">`;
+    } else if(target){
+      target.textContent = 'QR code unavailable';
+    }
+    setTimeout(()=>{
+      try{ w.focus(); w.print(); }catch(e){ console.error('print failed', e); }
+    }, 150);
+  }, 200);
 }
 
 /* ---------------- Locations ---------------- */
