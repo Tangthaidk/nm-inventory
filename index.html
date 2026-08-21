@@ -1012,14 +1012,15 @@ document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
   };
 
   let ok = true;
+  let errMsg = '';
   try{
     await db.collection('items').doc(id).set(publicData);
     await privRef(id).set(privateData);
-  }catch(e){ console.error('save item failed', e); ok = false; }
+  }catch(e){ console.error('save item failed', e); ok = false; errMsg = e.message || e.code || 'unknown error'; }
 
   btn.disabled = false; btn.textContent = 'Save piece & generate QR tag';
 
-  if(!ok){ toast('Could not save — please try again'); return; }
+  if(!ok){ toast('Could not save: ' + errMsg); return; }
 
   // reset form
   document.getElementById('f-name').value='';
