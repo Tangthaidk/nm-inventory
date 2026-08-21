@@ -294,22 +294,6 @@
   }
   .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px);}
 
-  @media print{
-    body *{visibility:hidden;}
-    #print-area, #print-area *{visibility:visible;}
-    #print-area{position:absolute;top:0;left:0;width:100%;}
-  }
-  #print-area{display:none;}
-  .print-labels{display:flex;flex-wrap:wrap;gap:10px;padding:16px;}
-  .print-label{
-    width:2.5in;height:1.7in;border:1px dashed #999;border-radius:6px;
-    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:3px;padding:8px;
-  }
-  .print-label img{width:70px;height:70px;}
-  .print-label .pn{font-family:'Fraunces',serif;font-weight:600;font-size:11px;text-align:center;}
-  .print-label .pp{font-family:'IBM Plex Mono',monospace;font-size:10px;}
-  .print-label .pid{font-family:'IBM Plex Mono',monospace;font-size:8px;color:#666;}
-
   .helper-note{font-size:12px;color:var(--ink-soft);margin-top:4px;}
   .loading-msg{text-align:center;padding:60px;color:var(--ink-soft);font-family:'IBM Plex Mono',monospace;font-size:13px;}
 
@@ -519,8 +503,6 @@
     </div>
   </div>
 </div>
-
-<div id="print-area"><div class="print-labels" id="printLabels"></div></div>
 
 <!-- Staff sign-in modal -->
 <div class="overlay" id="authOverlay">
@@ -1313,21 +1295,44 @@ document.getElementById('labelOverlay').addEventListener('click', e=>{
 });
 
 function printLabel(item){
-  const area = document.getElementById('printLabels');
   const qrTemp = document.createElement('div');
-  new QRCode(qrTemp, {text:'PROVQR:'+item.id, width:120, height:120});
+  new QRCode(qrTemp, {text:'PROVQR:'+item.id, width:200, height:200, colorDark:'#2A2622', colorLight:'#ffffff'});
   setTimeout(()=>{
     const img = qrTemp.querySelector('img') || qrTemp.querySelector('canvas');
     const src = img.tagName==='IMG' ? img.src : img.toDataURL();
-    area.innerHTML = `
-      <div class="print-label">
-        <img src="${src}">
-        <div class="pn">${esc(item.name)}</div>
-        <div class="pp">${money(item.price)}</div>
-        <div class="pid">${esc(item.id)}</div>
-      </div>`;
-    window.print();
-  }, 120);
+    const w = window.open('', '_blank', 'width=420,height=520');
+    if(!w){ toast('Please allow pop-ups to print the label'); return; }
+    w.document.write(`
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="UTF-8">
+        <title>Print label — ${esc(item.id)}</title>
+        <style>
+          *{box-sizing:border-box;}
+          body{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;margin:0;padding:20px;background:#fff;}
+          .print-label{width:2.5in;height:1.7in;border:1px dashed #999;border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:8px;}
+          .print-label img{width:90px;height:90px;}
+          .pn{font-weight:600;font-size:12px;text-align:center;font-family:Georgia,serif;}
+          .pp{font-size:11px;font-family:'Courier New',monospace;}
+          .pid{font-size:9px;color:#666;font-family:'Courier New',monospace;}
+        </style>
+      </head>
+      <body>
+        <div class="print-label">
+          <img src="${src}">
+          <div class="pn">${esc(item.name)}</div>
+          <div class="pp">${money(item.price)}</div>
+          <div class="pid">${esc(item.id)}</div>
+        </div>
+        <script>
+          window.onload = function(){ window.print(); };
+        <\/script>
+      </body>
+      </html>
+    `);
+    w.document.close();
+  }, 150);
 }
 
 /* ---------------- Locations ---------------- */
