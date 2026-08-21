@@ -219,6 +219,12 @@
     position:absolute;top:2px;right:2px;background:rgba(42,38,34,0.75);color:#fff;
     border:none;border-radius:50%;width:18px;height:18px;font-size:11px;line-height:1;cursor:pointer;
   }
+  .add-photo-tile{
+    display:flex;align-items:center;justify-content:center;
+    border:1.5px dashed var(--line-strong);color:var(--ink-soft);
+    font-size:24px;cursor:pointer;background:var(--surface-2);
+  }
+  .add-photo-tile:hover{border-color:var(--brass);color:var(--brass-deep);}
 
   /* ---------- Scan ---------- */
   .scan-wrap{display:flex;flex-direction:column;align-items:center;gap:18px;padding:10px 0;}
@@ -306,12 +312,11 @@
     position:fixed;inset:0;background:#fff;z-index:9999;
   }
   .print-label{
-    width:2.5in;height:1.7in;border:1px dashed #999;border-radius:6px;
-    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:8px;
+    max-width:2in;border:1px dashed #999;border-radius:6px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:12px 10px;
   }
-  .print-label img{width:90px;height:90px;}
-  .print-label .pn{font-family:'Fraunces',serif;font-weight:600;font-size:12px;text-align:center;}
-  .print-label .pp{font-family:'IBM Plex Mono',monospace;font-size:11px;}
+  .print-label img{width:130px;height:130px;}
+  .print-label .pn{font-family:'Fraunces',serif;font-weight:600;font-size:12px;text-align:center;line-height:1.25;}
   .print-label .pid{font-family:'IBM Plex Mono',monospace;font-size:9px;color:#666;}
 
   /* ---------- Auth ---------- */
@@ -1058,9 +1063,11 @@ function openItemModal(id, viaScan){
     <span class="pill ${item.status}">${esc(item.status)}</span>
   `;
 
-  const photosHtml = (item.photos && item.photos.length)
-    ? item.photos.map(p=>`<img src="${p}">`).join('')
-    : `<div class="none">◆</div>`;
+  const photosHtml = isStaff
+    ? renderModalPhotosEditable(item)
+    : `<div class="modal-photos">${(item.photos && item.photos.length)
+        ? item.photos.map(p=>`<img src="${p}">`).join('')
+        : `<div class="none">◆</div>`}</div>`;
 
   const locOptions = state.locations.map(l=>`<option value="${esc(l)}" ${l===item.location?'selected':''}>${esc(l)}</option>`).join('');
 
@@ -1082,7 +1089,7 @@ function openItemModal(id, viaScan){
     : `Category: ${esc(item.category)||'—'}`;
 
   document.getElementById('modalBody').innerHTML = `
-    <div class="modal-photos">${photosHtml}</div>
+    <div id="modalPhotosBlock">${photosHtml}</div>
     ${priceHtml}
     <div class="desc">${esc(item.description) || 'No description added.'}</div>
     <div class="loc-label" style="font-size:12.5px;">${metaLine}</div>
@@ -1148,9 +1155,73 @@ function openItemModal(id, viaScan){
   });
 
   wireListingDetails(item.id);
+  if(isStaff) wireModalPhotos(item.id);
 }
 
 /* ---------------- Listing details (materials/dimensions/period/condition/provenance) ---------------- */
+/* ---------------- Photo management (item modal, staff only) ---------------- */
+function compressImageAsync(file){
+  return new Promise(resolve=>compressImage(file, resolve));
+}
+
+function renderModalPhotosEditable(item){
+  const thumbs = (item.photos||[]).map((p,i)=>`
+    <div class="photo-thumb">
+      <img src="${p}">
+      <button class="rm" type="button" data-rm-photo="${i}">&times;</button>
+    </div>`).join('');
+  return `
+    <div class="photo-thumbs" id="modalPhotoThumbs">
+      ${thumbs}
+      <div class="photo-thumb add-photo-tile" id="modalAddPhotoTile" title="Add photos">+</div>
+    </div>
+    <input type="file" id="modalPhotoInput" accept="image/*" multiple style="display:none;">
+  `;
+}
+
+function wireModalPhotos(id){
+  const addTile = document.getElementById('modalAddPhotoTile');
+  const fileInput = document.getElementById('modalPhotoInput');
+  if(addTile && fileInput){
+    addTile.addEventListener('click', ()=>fileInput.click());
+    fileInput.addEventListener('change', e=>{
+      handleModalPhotoFiles(id, e.target.files);
+      fileInput.value = '';
+    });
+  }
+  document.querySelectorAll('#modalPhotoThumbs button[data-rm-photo]').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      removePhotoFromItem(id, parseInt(btn.dataset.rmPhoto,10));
+    });
+  });
+}
+
+async function handleModalPhotoFiles(id, fileList){
+  if(!requireStaff()) return;
+  const files = Array.from(fileList).filter(f=>f.type.startsWith('image/'));
+  if(!files.length) return;
+  const item = findItem(id);
+  if(!item) return;
+  const newPhotos = await Promise.all(files.map(compressImageAsync));
+  const photos = (item.photos||[]).concat(newPhotos);
+  await db.collection('items').doc(id).update({photos});
+  await loadItems();
+  toast(newPhotos.length>1 ? 'Photos added' : 'Photo added');
+  openItemModal(id, state.currentItemViaScan);
+}
+
+async function removePhotoFromItem(id, index){
+  if(!requireStaff()) return;
+  const item = findItem(id);
+  if(!item || !item.photos) return;
+  const photos = item.photos.slice();
+  photos.splice(index,1);
+  await db.collection('items').doc(id).update({photos});
+  await loadItems();
+  toast('Photo removed');
+  openItemModal(id, state.currentItemViaScan);
+}
+
 function renderListingDetailsView(item){
   const rows = [
     ['Materials', item.materials],
@@ -1295,7 +1366,6 @@ function openLabelModal(item){
     <div class="label-preview">
       <div id="qrHolder"></div>
       <div class="lname">${esc(item.name)}</div>
-      <div class="lprice">${money(item.price)}</div>
       <div class="lid">${esc(item.id)}</div>
     </div>`;
   new QRCode(document.getElementById('qrHolder'), {
@@ -1330,7 +1400,6 @@ function printLabel(item){
       <div class="print-label">
         ${src ? `<img src="${src}">` : ''}
         <div class="pn">${esc(item.name)}</div>
-        <div class="pp">${money(item.price)}</div>
         <div class="pid">${esc(item.id)}</div>
       </div>`;
 
