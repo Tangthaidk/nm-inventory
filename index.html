@@ -297,6 +297,23 @@
   .helper-note{font-size:12px;color:var(--ink-soft);margin-top:4px;}
   .loading-msg{text-align:center;padding:60px;color:var(--ink-soft);font-family:'IBM Plex Mono',monospace;font-size:13px;}
 
+  /* ---------- Print label ---------- */
+  #printArea{display:none;}
+  body.printing-label > *:not(#printArea){display:none !important;}
+  body.printing-label #printArea{
+    display:flex !important;
+    align-items:center;justify-content:center;
+    position:fixed;inset:0;background:#fff;z-index:9999;
+  }
+  .print-label{
+    width:2.5in;height:1.7in;border:1px dashed #999;border-radius:6px;
+    display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:8px;
+  }
+  .print-label img{width:90px;height:90px;}
+  .print-label .pn{font-family:'Fraunces',serif;font-weight:600;font-size:12px;text-align:center;}
+  .print-label .pp{font-family:'IBM Plex Mono',monospace;font-size:11px;}
+  .print-label .pid{font-family:'IBM Plex Mono',monospace;font-size:9px;color:#666;}
+
   /* ---------- Auth ---------- */
   .auth-area{display:flex;align-items:center;gap:10px;}
   .auth-status{font-family:'IBM Plex Mono',monospace;font-size:11.5px;color:var(--ink-soft);display:flex;align-items:center;gap:6px;}
@@ -503,6 +520,8 @@
     </div>
   </div>
 </div>
+
+<div id="printArea"></div>
 
 <!-- Staff sign-in modal -->
 <div class="overlay" id="authOverlay">
@@ -1295,38 +1314,6 @@ document.getElementById('labelOverlay').addEventListener('click', e=>{
 });
 
 function printLabel(item){
-  const w = window.open('', '_blank', 'width=420,height=520');
-  if(!w){ toast('Please allow pop-ups to print the label, then try again'); return; }
-  w.document.write(`
-    <!DOCTYPE html>
-    <html>
-    <head>
-      <meta charset="UTF-8">
-      <title>Print label — ${esc(item.id)}</title>
-      <style>
-        *{box-sizing:border-box;}
-        body{font-family:Arial,sans-serif;display:flex;align-items:center;justify-content:center;margin:0;padding:20px;background:#fff;}
-        .print-label{width:2.5in;height:1.7in;border:1px dashed #999;border-radius:6px;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:4px;padding:8px;}
-        .print-label img{width:90px;height:90px;}
-        .pn{font-weight:600;font-size:12px;text-align:center;font-family:Georgia,serif;}
-        .pp{font-size:11px;font-family:'Courier New',monospace;}
-        .pid{font-size:9px;color:#666;font-family:'Courier New',monospace;}
-      </style>
-    </head>
-    <body>
-      <div class="print-label">
-        <div id="qrTarget">Generating…</div>
-        <div class="pn">${esc(item.name)}</div>
-        <div class="pp">${money(item.price)}</div>
-        <div class="pid">${esc(item.id)}</div>
-      </div>
-    </body>
-    </html>
-  `);
-  w.document.close();
-
-  // Render the QR code in our own document (known-reliable), then hand the
-  // resulting image over to the popup — avoids any cross-window DOM issues.
   const qrTemp = document.createElement('div');
   qrTemp.style.position = 'fixed';
   qrTemp.style.left = '-9999px';
@@ -1337,17 +1324,23 @@ function printLabel(item){
     const img = qrTemp.querySelector('img') || qrTemp.querySelector('canvas');
     const src = img ? (img.tagName==='IMG' ? img.src : img.toDataURL()) : '';
     document.body.removeChild(qrTemp);
-    const target = w.document.getElementById('qrTarget');
-    if(target && src){
-      target.outerHTML = `<img src="${src}">`;
-    } else if(target){
-      target.textContent = 'QR code unavailable';
-    }
-    setTimeout(()=>{
-      try{ w.focus(); w.print(); }catch(e){ console.error('print failed', e); }
-    }, 150);
-  }, 200);
+
+    const area = document.getElementById('printArea');
+    area.innerHTML = `
+      <div class="print-label">
+        ${src ? `<img src="${src}">` : ''}
+        <div class="pn">${esc(item.name)}</div>
+        <div class="pp">${money(item.price)}</div>
+        <div class="pid">${esc(item.id)}</div>
+      </div>`;
+
+    document.body.classList.add('printing-label');
+    window.print();
+  }, 150);
 }
+window.addEventListener('afterprint', ()=>{
+  document.body.classList.remove('printing-label');
+});
 
 /* ---------------- Locations ---------------- */
 function renderLocations(){
