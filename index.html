@@ -103,6 +103,21 @@
 
   /* ---------- Inventory ---------- */
   .toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:20px;align-items:center;}
+  .bulk-bar{
+    display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+    background:var(--surface);border:1px solid var(--line-strong);border-radius:9px;
+    padding:10px 14px;margin-bottom:16px;
+  }
+  .bulk-bar .mono{font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--ink-soft);margin-right:auto;}
+  .select-check{
+    position:absolute;top:6px;left:6px;z-index:2;
+    background:rgba(247,243,232,0.92);border-radius:5px;padding:3px 4px;
+    display:flex;align-items:center;justify-content:center;
+    box-shadow:0 1px 3px rgba(0,0,0,0.15);
+  }
+  .select-check input{width:16px;height:16px;margin:0;cursor:pointer;}
+  .card.selectable{cursor:pointer;}
+  .card.selected{outline:2px solid var(--brass);outline-offset:-2px;}
   .search-wrap{position:relative;flex:1;min-width:200px;}
   input[type=text], input[type=number], input[type=search], select, textarea{
     font-family:'Inter',sans-serif;font-size:14px;color:var(--ink);
@@ -307,10 +322,16 @@
   #printArea{display:none;}
   body.printing-label > *:not(#printArea){display:none !important;}
   body.printing-label #printArea{
-    display:flex !important;
-    align-items:center;justify-content:center;
-    position:fixed;inset:0;background:#fff;z-index:9999;
+    display:block !important;
+    position:static;
+    background:#fff;
   }
+  .print-page{
+    width:100%;min-height:100vh;box-sizing:border-box;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .print-page:not(:last-child){page-break-after:always;break-after:page;}
+  .print-sheet{display:flex;flex-wrap:wrap;gap:14px;padding:20px;align-content:flex-start;}
   .print-label{
     max-width:2in;border:1px dashed #999;border-radius:6px;
     display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:12px 10px;
@@ -380,6 +401,14 @@
         <option value="sold">Sold</option>
       </select>
       <select id="filterTag"><option value="">All tags</option></select>
+      <button class="btn btn-outline small" id="selectModeBtn" style="display:none;">Select items</button>
+    </div>
+    <div class="bulk-bar" id="bulkBar" style="display:none;">
+      <span id="bulkCount" class="mono">0 selected</span>
+      <button class="btn btn-outline small" id="selectAllBtn">Select all shown</button>
+      <button class="btn btn-outline small" id="clearSelectBtn">Clear</button>
+      <button class="btn btn-brass small" id="printSelectedBtn">Print labels</button>
+      <button class="btn btn-outline small" id="exitSelectBtn">Done</button>
     </div>
     <div id="loadingInv" class="loading-msg">Loading inventory…</div>
     <div class="grid" id="itemGrid"></div>
@@ -528,6 +557,29 @@
 
 <div id="printArea"></div>
 
+<!-- Bulk print modal -->
+<div class="overlay" id="bulkPrintOverlay">
+  <div class="modal" style="max-width:380px;">
+    <div class="modal-header">
+      <div class="modal-title-row"><span class="serif" style="font-size:17px;font-weight:600;">Print labels</span></div>
+      <button class="modal-close" id="closeBulkPrintBtn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label>Label size / printer</label>
+        <select id="bulkLabelSize">
+          <option value="thermal-2x1">2 × 1 in — thermal roll</option>
+          <option value="thermal-4x2">4 × 2 in — thermal roll</option>
+          <option value="thermal-4x6">4 × 6 in — thermal shipping label</option>
+          <option value="sheet">Sheet — regular printer (several per page)</option>
+        </select>
+      </div>
+      <div class="helper-note" style="margin-top:6px;">Thermal roll sizes print one label per page — your printer advances to the next label automatically, no cutting or clicking through items one by one. Sheet mode fits several labels on a normal page for a regular printer.</div>
+      <button class="btn btn-primary" id="confirmBulkPrintBtn" style="width:100%;margin-top:16px;">Print <span id="bulkPrintCount">0</span> labels</button>
+    </div>
+  </div>
+</div>
+
 <!-- Staff sign-in modal -->
 <div class="overlay" id="authOverlay">
   <div class="modal" style="max-width:360px;">
@@ -649,7 +701,9 @@ let state = {
   cameraStream: null,
   scanning: false,
   currentItemId: null,
-  dataLoaded: false
+  dataLoaded: false,
+  selectMode: false,
+  selectedIds: new Set()
 };
 
 let currentUser = null;
@@ -729,6 +783,8 @@ function applyAuthGating(){
   document.getElementById('addLockedPanel').style.display = isStaff ? 'none' : 'block';
   document.getElementById('addLocRow').style.display = isStaff ? 'flex' : 'none';
   document.getElementById('filterLocation').style.display = isStaff ? '' : 'none';
+  if(!isStaff && state.selectMode){ exitSelectMode(); }
+  document.getElementById('selectModeBtn').style.display = (isStaff && !state.selectMode) ? '' : 'none';
   renderLocations();
   renderGrid();
   if(state.currentItemId && document.getElementById('itemOverlay').classList.contains('active')){
@@ -849,13 +905,13 @@ function money(v){
 }
 
 /* ---------------- Render inventory grid ---------------- */
-function renderGrid(){
+function getFilteredItems(){
   const q = document.getElementById('searchInput').value.trim().toLowerCase();
   const locF = document.getElementById('filterLocation').value;
   const statF = document.getElementById('filterStatus').value;
   const tagF = document.getElementById('filterTag').value;
 
-  const filtered = state.items.filter(it=>{
+  return state.items.filter(it=>{
     if(isStaff && locF && it.location !== locF) return false;
     if(statF && it.status !== statF) return false;
     if(tagF && !(it.tags||[]).includes(tagF)) return false;
@@ -865,6 +921,10 @@ function renderGrid(){
     }
     return true;
   });
+}
+
+function renderGrid(){
+  const filtered = getFilteredItems();
 
   const grid = document.getElementById('itemGrid');
   const empty = document.getElementById('emptyState');
@@ -874,12 +934,16 @@ function renderGrid(){
   }
   empty.style.display='none';
 
+  const selecting = isStaff && state.selectMode;
+
   grid.innerHTML = filtered.map(it=>{
     const photo = (it.photos && it.photos[0]) ? `<img src="${it.photos[0]}" alt="">` : `<div class="placeholder">◆</div>`;
+    const checked = state.selectedIds.has(it.id);
     return `
-    <div class="card" data-id="${esc(it.id)}">
+    <div class="card ${selecting?'selectable':''} ${checked?'selected':''}" data-id="${esc(it.id)}">
       <div class="card-photo">
         ${photo}
+        ${selecting ? `<label class="select-check"><input type="checkbox" data-select-id="${esc(it.id)}" ${checked?'checked':''}></label>` : ''}
         <div class="tag-corner">${esc(it.id)}</div>
       </div>
       <div class="card-body">
@@ -895,9 +959,74 @@ function renderGrid(){
   }).join('');
 
   grid.querySelectorAll('.card').forEach(c=>{
-    c.addEventListener('click', ()=> openItemModal(c.dataset.id, false));
+    c.addEventListener('click', (e)=>{
+      if(selecting){
+        toggleSelect(c.dataset.id);
+      } else {
+        openItemModal(c.dataset.id, false);
+      }
+    });
   });
+  grid.querySelectorAll('input[data-select-id]').forEach(cb=>{
+    cb.addEventListener('click', e=>e.stopPropagation());
+    cb.addEventListener('change', e=>toggleSelect(cb.dataset.selectId));
+  });
+
+  updateBulkCount();
 }
+
+/* ---------------- Bulk selection & printing ---------------- */
+function toggleSelect(id){
+  if(state.selectedIds.has(id)) state.selectedIds.delete(id);
+  else state.selectedIds.add(id);
+  renderGrid();
+}
+function updateBulkCount(){
+  const el = document.getElementById('bulkCount');
+  if(el) el.textContent = state.selectedIds.size + ' selected';
+}
+function enterSelectMode(){
+  if(!requireStaff()) return;
+  state.selectMode = true;
+  state.selectedIds = new Set();
+  document.getElementById('selectModeBtn').style.display = 'none';
+  document.getElementById('bulkBar').style.display = 'flex';
+  renderGrid();
+}
+function exitSelectMode(){
+  state.selectMode = false;
+  state.selectedIds = new Set();
+  document.getElementById('bulkBar').style.display = 'none';
+  document.getElementById('selectModeBtn').style.display = isStaff ? '' : 'none';
+  renderGrid();
+}
+document.getElementById('selectModeBtn').addEventListener('click', enterSelectMode);
+document.getElementById('exitSelectBtn').addEventListener('click', exitSelectMode);
+document.getElementById('selectAllBtn').addEventListener('click', ()=>{
+  getFilteredItems().forEach(it=>state.selectedIds.add(it.id));
+  renderGrid();
+});
+document.getElementById('clearSelectBtn').addEventListener('click', ()=>{
+  state.selectedIds.clear();
+  renderGrid();
+});
+document.getElementById('printSelectedBtn').addEventListener('click', ()=>{
+  if(state.selectedIds.size === 0){ toast('Select at least one item first'); return; }
+  document.getElementById('bulkPrintCount').textContent = state.selectedIds.size;
+  document.getElementById('bulkPrintOverlay').classList.add('active');
+});
+document.getElementById('closeBulkPrintBtn').addEventListener('click', ()=>{
+  document.getElementById('bulkPrintOverlay').classList.remove('active');
+});
+document.getElementById('bulkPrintOverlay').addEventListener('click', e=>{
+  if(e.target.id==='bulkPrintOverlay') e.currentTarget.classList.remove('active');
+});
+document.getElementById('confirmBulkPrintBtn').addEventListener('click', async ()=>{
+  const layout = document.getElementById('bulkLabelSize').value;
+  const items = state.items.filter(it=>state.selectedIds.has(it.id));
+  document.getElementById('bulkPrintOverlay').classList.remove('active');
+  await printBulkLabels(items, layout);
+});
 
 document.getElementById('searchInput').addEventListener('input', renderGrid);
 document.getElementById('filterLocation').addEventListener('change', renderGrid);
@@ -1383,32 +1512,74 @@ document.getElementById('labelOverlay').addEventListener('click', e=>{
   if(e.target.id==='labelOverlay') e.currentTarget.classList.remove('active');
 });
 
-function printLabel(item){
-  const qrTemp = document.createElement('div');
-  qrTemp.style.position = 'fixed';
-  qrTemp.style.left = '-9999px';
-  document.body.appendChild(qrTemp);
-  new QRCode(qrTemp, {text:'PROVQR:'+item.id, width:200, height:200, colorDark:'#2A2622', colorLight:'#ffffff'});
-
-  setTimeout(()=>{
-    const img = qrTemp.querySelector('img') || qrTemp.querySelector('canvas');
-    const src = img ? (img.tagName==='IMG' ? img.src : img.toDataURL()) : '';
-    document.body.removeChild(qrTemp);
-
-    const area = document.getElementById('printArea');
-    area.innerHTML = `
-      <div class="print-label">
-        ${src ? `<img src="${src}">` : ''}
-        <div class="pn">${esc(item.name)}</div>
-        <div class="pid">${esc(item.id)}</div>
-      </div>`;
-
-    document.body.classList.add('printing-label');
-    window.print();
-  }, 150);
+function labelMarkup(l){
+  return `
+    <div class="print-label">
+      ${l.src ? `<img src="${l.src}">` : ''}
+      <div class="pn">${esc(l.item.name)}</div>
+      <div class="pid">${esc(l.item.id)}</div>
+    </div>`;
 }
+
+async function printBulkLabels(items, layout){
+  if(!items || !items.length) return;
+  if(items.length > 1) toast('Preparing ' + items.length + ' labels…');
+
+  // Generate all QR codes off-screen in one batch.
+  const temp = document.createElement('div');
+  temp.style.position = 'fixed';
+  temp.style.left = '-9999px';
+  document.body.appendChild(temp);
+  const holders = items.map(it=>{
+    const d = document.createElement('div');
+    temp.appendChild(d);
+    new QRCode(d, {text:'PROVQR:'+it.id, width:200, height:200, colorDark:'#2A2622', colorLight:'#ffffff'});
+    return d;
+  });
+
+  await new Promise(res=>setTimeout(res, 200));
+
+  const labels = holders.map((d,i)=>{
+    const img = d.querySelector('img') || d.querySelector('canvas');
+    const src = img ? (img.tagName==='IMG' ? img.src : img.toDataURL()) : '';
+    return { item: items[i], src };
+  });
+  document.body.removeChild(temp);
+
+  const area = document.getElementById('printArea');
+  const oldPageStyle = document.getElementById('dynamicPageStyle');
+  if(oldPageStyle) oldPageStyle.remove();
+
+  const sizeMap = {
+    'thermal-2x1': '2in 1in',
+    'thermal-4x2': '4in 2in',
+    'thermal-4x6': '4in 6in'
+  };
+
+  if(layout === 'sheet'){
+    area.innerHTML = `<div class="print-sheet">${labels.map(labelMarkup).join('')}</div>`;
+  } else {
+    if(sizeMap[layout]){
+      const style = document.createElement('style');
+      style.id = 'dynamicPageStyle';
+      style.textContent = `@page{ size: ${sizeMap[layout]}; margin:0; }`;
+      document.head.appendChild(style);
+    }
+    area.innerHTML = labels.map(l=>`<div class="print-page">${labelMarkup(l)}</div>`).join('');
+  }
+
+  document.body.classList.add('printing-label');
+  window.print();
+}
+
+function printLabel(item){
+  printBulkLabels([item], 'single');
+}
+
 window.addEventListener('afterprint', ()=>{
   document.body.classList.remove('printing-label');
+  const s = document.getElementById('dynamicPageStyle');
+  if(s) s.remove();
 });
 
 /* ---------------- Locations ---------------- */
