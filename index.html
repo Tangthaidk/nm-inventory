@@ -351,6 +351,19 @@
 
   /* ---------- Listing details / 1stDibs description ---------- */
   .listing-details{margin:16px 0;border-top:1px solid var(--line);padding-top:14px;}
+  .pair-section{margin:16px 0;border-top:1px solid var(--line);padding-top:14px;}
+  .pair-section h4{font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-soft);margin:0 0 10px;}
+  .pair-chip{
+    display:inline-flex;align-items:center;gap:6px;background:var(--surface-2);
+    border:1px solid var(--line-strong);border-radius:20px;padding:4px 10px;
+    font-family:'IBM Plex Mono',monospace;font-size:12px;margin:0 6px 6px 0;cursor:pointer;
+  }
+  .pair-chip:hover{border-color:var(--brass);}
+  .pair-chip button{background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:13px;line-height:1;padding:0 0 0 2px;}
+  .pair-chip button:hover{color:var(--rust);}
+  .pair-add-row{display:flex;gap:8px;margin-top:8px;}
+  .pair-add-row input{flex:1;}
+  .set-badge{font-size:11.5px;color:var(--brass-deep);font-family:'IBM Plex Mono',monospace;}
   .listing-details h4{font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-soft);margin:0 0 10px;display:flex;justify-content:space-between;align-items:center;}
   .listing-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px 14px;}
   .listing-grid .lf{font-size:13px;}
@@ -950,6 +963,7 @@ function renderGrid(){
         <div class="card-name">${esc(it.name || 'Untitled piece')}</div>
         ${isStaff ? `<div class="card-price">${money(it.price)}</div>` : `<div class="card-price" style="color:var(--ink-soft);font-size:12px;font-family:'IBM Plex Mono',monospace;">Scan tag for price</div>`}
         ${(it.tags && it.tags.length) ? `<div class="tag-chips">${it.tags.map(t=>`<span class="tag-chip on-card">${esc(t)}</span>`).join('')}</div>` : ''}
+        ${(it.pairedWith && it.pairedWith.length) ? `<div class="set-badge">⛓ Set of ${it.pairedWith.length+1}</div>` : ''}
         <div class="card-meta">
           ${isStaff ? `<span class="loc-label">${esc(it.location||'—')}</span>` : '<span></span>'}
           <span class="pill ${it.status}">${esc(it.status)}</span>
@@ -1139,6 +1153,7 @@ document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
     dimensions: document.getElementById('f-dimensions').value.trim(),
     provenance: document.getElementById('f-provenance').value.trim(),
     condition: document.getElementById('f-condition').value.trim(),
+    pairedWith: [],
     createdAt: Date.now()
   };
   const privateData = {
@@ -1230,6 +1245,8 @@ function openItemModal(id, viaScan){
 
     <div class="listing-details" id="listingDetailsBlock">${renderListingDetailsView(item)}</div>
 
+    <div id="pairBlock">${renderPairSection(item)}</div>
+
     <div class="action-grid">
       ${isStaff ? '<button class="btn btn-brass small" id="printTagBtn">Print QR tag</button>' : ''}
       ${isStaff ? (item.status!=='sold' ? '<button class="btn btn-rust small" id="markSoldBtn">Mark sold</button>' : '<button class="btn btn-sage small" id="markAvailBtn">Mark available</button>') : ''}
@@ -1285,6 +1302,7 @@ function openItemModal(id, viaScan){
 
   wireListingDetails(item.id);
   if(isStaff) wireModalPhotos(item.id);
+  wirePairSection(item.id);
 }
 
 /* ---------------- Listing details (materials/dimensions/period/condition/provenance) ---------------- */
@@ -1348,6 +1366,86 @@ async function removePhotoFromItem(id, index){
   await db.collection('items').doc(id).update({photos});
   await loadItems();
   toast('Photo removed');
+  openItemModal(id, state.currentItemViaScan);
+}
+
+/* ---------------- Pair / set linking ---------------- */
+function renderPairSection(item){
+  const paired = item.pairedWith || [];
+  const chips = paired.map(pid=>`
+    <span class="pair-chip" data-goto-pair="${esc(pid)}">
+      ${esc(pid)}
+      ${isStaff ? `<button type="button" data-unpair="${esc(pid)}">&times;</button>` : ''}
+    </span>`).join('');
+  return `
+    <div class="pair-section" id="pairSection">
+      <h4>Part of a set</h4>
+      ${chips || `<div class="helper-note" style="margin:0;">Not linked to any other pieces.</div>`}
+      ${isStaff ? `
+      <div class="pair-add-row">
+        <input type="text" id="pairIdInput" placeholder="Item ID, e.g. AN-0031">
+        <button class="btn btn-outline small" id="pairAddBtn" type="button">Link</button>
+      </div>` : ''}
+    </div>`;
+}
+
+function wirePairSection(id){
+  document.querySelectorAll('#pairSection .pair-chip').forEach(chip=>{
+    chip.addEventListener('click', (e)=>{
+      if(e.target.closest('button[data-unpair]')) return;
+      openItemModal(chip.dataset.gotoPair, state.currentItemViaScan);
+    });
+  });
+  document.querySelectorAll('#pairSection button[data-unpair]').forEach(btn=>{
+    btn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      unpairItems(id, btn.dataset.unpair);
+    });
+  });
+  const addBtn = document.getElementById('pairAddBtn');
+  const input = document.getElementById('pairIdInput');
+  if(addBtn && input){
+    addBtn.addEventListener('click', ()=>{
+      const val = input.value.trim().toUpperCase();
+      if(val) pairItems(id, val);
+    });
+    input.addEventListener('keydown', e=>{
+      if(e.key==='Enter'){
+        e.preventDefault();
+        const val = input.value.trim().toUpperCase();
+        if(val) pairItems(id, val);
+      }
+    });
+  }
+}
+
+async function pairItems(id, otherId){
+  if(!requireStaff()) return;
+  if(!otherId || otherId === id){ toast('Enter a different item ID'); return; }
+  let other = findItem(otherId);
+  if(!other) other = await fetchItemPublic(otherId);
+  if(!other){ toast('No item found for ' + otherId); return; }
+  await db.collection('items').doc(id).update({
+    pairedWith: firebase.firestore.FieldValue.arrayUnion(otherId)
+  });
+  await db.collection('items').doc(otherId).update({
+    pairedWith: firebase.firestore.FieldValue.arrayUnion(id)
+  });
+  await loadItems();
+  toast('Linked to ' + otherId);
+  openItemModal(id, state.currentItemViaScan);
+}
+
+async function unpairItems(id, otherId){
+  if(!requireStaff()) return;
+  await db.collection('items').doc(id).update({
+    pairedWith: firebase.firestore.FieldValue.arrayRemove(otherId)
+  });
+  await db.collection('items').doc(otherId).update({
+    pairedWith: firebase.firestore.FieldValue.arrayRemove(id)
+  });
+  await loadItems();
+  toast('Unlinked from ' + otherId);
   openItemModal(id, state.currentItemViaScan);
 }
 
@@ -1456,6 +1554,21 @@ async function updateStatus(id, status){
   await privRef(id).set({
     history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: 'Marked as ' + status})
   }, {merge:true});
+
+  const paired = item.pairedWith || [];
+  if(paired.length){
+    const names = paired.join(', ');
+    const applyAll = confirm(`${item.id} is part of a set with ${names}. Mark ${paired.length>1?'those pieces':'that piece'} as ${status} too?`);
+    if(applyAll){
+      for(const pid of paired){
+        await db.collection('items').doc(pid).update({status});
+        await privRef(pid).set({
+          history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: `Marked as ${status} (set with ${item.id})`})
+        }, {merge:true});
+      }
+    }
+  }
+
   await loadItems();
   toast(item.id + ' marked ' + status);
   openItemModal(id, state.currentItemViaScan);
