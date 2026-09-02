@@ -1225,9 +1225,11 @@ function openItemModal(id, viaScan){
   ).join('');
 
   const showPrice = isStaff || !!viaScan;
-  const priceHtml = showPrice
-    ? `<div class="card-price" style="font-size:17px;">${money(item.price)}</div>`
-    : `<div class="card-price" style="font-size:13px;color:var(--ink-soft);font-family:'IBM Plex Mono',monospace;">Scan this piece's QR tag to see price</div>`;
+  const priceHtml = isStaff
+    ? `<div id="priceBlock">${renderPriceView(item)}</div>`
+    : (showPrice
+        ? `<div class="card-price" style="font-size:17px;">${money(item.price)}</div>`
+        : `<div class="card-price" style="font-size:13px;color:var(--ink-soft);font-family:'IBM Plex Mono',monospace;">Scan this piece's QR tag to see price</div>`);
   const metaLine = isStaff
     ? `Category: ${esc(item.category)||'—'} &nbsp;·&nbsp; Location: ${esc(item.location)}`
     : `Category: ${esc(item.category)||'—'}`;
@@ -1302,6 +1304,7 @@ function openItemModal(id, viaScan){
 
   wireListingDetails(item.id);
   if(isStaff) wireModalPhotos(item.id);
+  if(isStaff) wirePriceBlock(item.id);
   wirePairSection(item.id);
 }
 
@@ -1447,6 +1450,56 @@ async function unpairItems(id, otherId){
   await loadItems();
   toast('Unlinked from ' + otherId);
   openItemModal(id, state.currentItemViaScan);
+}
+
+/* ---------------- Price editing (staff only) ---------------- */
+function renderPriceView(item){
+  return `
+    <div class="card-price" style="font-size:17px;display:flex;align-items:center;gap:10px;">
+      ${money(item.price)}
+      <button class="btn btn-outline small" id="editPriceBtn" type="button">Edit</button>
+    </div>`;
+}
+
+function renderPriceEdit(item){
+  return `
+    <div class="field" style="margin-bottom:8px;max-width:200px;">
+      <label>Price</label>
+      <input type="number" id="priceInput" value="${esc(item.price||'')}" step="0.01" min="0" placeholder="0.00">
+    </div>
+    <div class="inline-actions">
+      <button class="btn btn-primary small" id="savePriceBtn" type="button">Save price</button>
+      <button class="btn btn-outline small" id="cancelPriceBtn" type="button">Cancel</button>
+    </div>`;
+}
+
+function wirePriceBlock(id){
+  const editBtn = document.getElementById('editPriceBtn');
+  if(!editBtn) return;
+  editBtn.addEventListener('click', ()=>{
+    const item = findItem(id);
+    document.getElementById('priceBlock').innerHTML = renderPriceEdit(item);
+    document.getElementById('savePriceBtn').addEventListener('click', ()=>savePrice(id));
+    document.getElementById('cancelPriceBtn').addEventListener('click', ()=>{
+      document.getElementById('priceBlock').innerHTML = renderPriceView(item);
+      wirePriceBlock(id);
+    });
+    document.getElementById('priceInput').addEventListener('keydown', e=>{
+      if(e.key==='Enter'){ e.preventDefault(); savePrice(id); }
+    });
+  });
+}
+
+async function savePrice(id){
+  if(!requireStaff()) return;
+  const item = findItem(id);
+  if(!item) return;
+  const newPrice = document.getElementById('priceInput').value;
+  await db.collection('items').doc(id).update({price: newPrice});
+  await loadItems();
+  document.getElementById('priceBlock').innerHTML = renderPriceView(findItem(id));
+  wirePriceBlock(id);
+  toast('Price updated');
 }
 
 function renderListingDetailsView(item){
