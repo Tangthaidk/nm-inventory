@@ -229,10 +229,11 @@
   .photo-drop:hover{border-color:var(--brass);}
   .photo-thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}
   .photo-thumb{position:relative;width:70px;height:70px;border-radius:6px;overflow:hidden;border:1px solid var(--line);}
-  .photo-thumb img{width:100%;height:100%;object-fit:cover;}
+  .photo-thumb img{width:100%;height:100%;object-fit:cover;cursor:zoom-in;}
   .photo-thumb .rm{
     position:absolute;top:2px;right:2px;background:rgba(42,38,34,0.75);color:#fff;
     border:none;border-radius:50%;width:18px;height:18px;font-size:11px;line-height:1;cursor:pointer;
+    z-index:2;
   }
   .add-photo-tile{
     display:flex;align-items:center;justify-content:center;
@@ -240,6 +241,14 @@
     font-size:24px;cursor:pointer;background:var(--surface-2);
   }
   .add-photo-tile:hover{border-color:var(--brass);color:var(--brass-deep);}
+  .modal-photos img{cursor:zoom-in;}
+  .lightbox-inner{position:relative;max-width:92vw;max-height:88vh;display:flex;align-items:center;justify-content:center;}
+  .lightbox-inner img{max-width:92vw;max-height:88vh;object-fit:contain;border-radius:6px;box-shadow:0 20px 60px rgba(0,0,0,0.4);}
+  .lightbox-close{
+    position:absolute;top:-14px;right:-14px;background:var(--forest);color:#F3EFE2;
+    border-radius:50%;width:34px;height:34px;font-size:20px;box-shadow:0 4px 14px rgba(0,0,0,0.3);
+  }
+  #photoLightbox{background:rgba(20,18,15,0.85);}
 
   /* ---------- Scan ---------- */
   .scan-wrap{display:flex;flex-direction:column;align-items:center;gap:18px;padding:10px 0;}
@@ -569,6 +578,14 @@
 </div>
 
 <div id="printArea"></div>
+
+<!-- Photo lightbox -->
+<div class="overlay" id="photoLightbox">
+  <div class="lightbox-inner">
+    <button class="modal-close lightbox-close" id="closeLightboxBtn">&times;</button>
+    <img id="lightboxImg" src="" alt="">
+  </div>
+</div>
 
 <!-- Bulk print modal -->
 <div class="overlay" id="bulkPrintOverlay">
@@ -1306,12 +1323,35 @@ function openItemModal(id, viaScan){
   if(isStaff) wireModalPhotos(item.id);
   if(isStaff) wirePriceBlock(item.id);
   wirePairSection(item.id);
+  wirePhotoLightbox();
 }
 
 /* ---------------- Listing details (materials/dimensions/period/condition/provenance) ---------------- */
 /* ---------------- Photo management (item modal, staff only) ---------------- */
 function compressImageAsync(file){
   return new Promise(resolve=>compressImage(file, resolve));
+}
+
+/* ---------------- Photo lightbox (view full-size) ---------------- */
+function openPhotoLightbox(src){
+  document.getElementById('lightboxImg').src = src;
+  document.getElementById('photoLightbox').classList.add('active');
+}
+function closePhotoLightbox(){
+  document.getElementById('photoLightbox').classList.remove('active');
+  document.getElementById('lightboxImg').src = '';
+}
+document.getElementById('closeLightboxBtn').addEventListener('click', closePhotoLightbox);
+document.getElementById('photoLightbox').addEventListener('click', e=>{
+  if(e.target.id==='photoLightbox') closePhotoLightbox();
+});
+function wirePhotoLightbox(){
+  document.querySelectorAll('#modalPhotosBlock img').forEach(img=>{
+    img.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      openPhotoLightbox(img.src);
+    });
+  });
 }
 
 function renderModalPhotosEditable(item){
