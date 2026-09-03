@@ -248,6 +248,20 @@
     position:absolute;top:-14px;right:-14px;background:var(--forest);color:#F3EFE2;
     border-radius:50%;width:34px;height:34px;font-size:20px;box-shadow:0 4px 14px rgba(0,0,0,0.3);
   }
+  .lightbox-nav{
+    position:absolute;top:50%;transform:translateY(-50%);
+    background:rgba(0,0,0,0.45);color:#fff;border:none;border-radius:50%;
+    width:42px;height:42px;font-size:26px;line-height:1;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;z-index:2;
+  }
+  .lightbox-nav:hover{background:rgba(0,0,0,0.7);}
+  .lightbox-prev{left:8px;}
+  .lightbox-next{right:8px;}
+  .lightbox-counter{
+    position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
+    color:#fff;background:rgba(0,0,0,0.45);padding:4px 12px;border-radius:20px;
+    font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:0.02em;
+  }
   #photoLightbox{background:rgba(20,18,15,0.85);}
 
   /* ---------- Scan ---------- */
@@ -583,7 +597,10 @@
 <div class="overlay" id="photoLightbox">
   <div class="lightbox-inner">
     <button class="modal-close lightbox-close" id="closeLightboxBtn">&times;</button>
+    <button class="lightbox-nav lightbox-prev" id="lightboxPrev">&#8249;</button>
     <img id="lightboxImg" src="" alt="">
+    <button class="lightbox-nav lightbox-next" id="lightboxNext">&#8250;</button>
+    <div class="lightbox-counter" id="lightboxCounter"></div>
   </div>
 </div>
 
@@ -1323,7 +1340,7 @@ function openItemModal(id, viaScan){
   if(isStaff) wireModalPhotos(item.id);
   if(isStaff) wirePriceBlock(item.id);
   wirePairSection(item.id);
-  wirePhotoLightbox();
+  wirePhotoLightbox(item);
 }
 
 /* ---------------- Listing details (materials/dimensions/period/condition/provenance) ---------------- */
@@ -1332,24 +1349,69 @@ function compressImageAsync(file){
   return new Promise(resolve=>compressImage(file, resolve));
 }
 
-/* ---------------- Photo lightbox (view full-size) ---------------- */
-function openPhotoLightbox(src){
-  document.getElementById('lightboxImg').src = src;
+/* ---------------- Photo lightbox (swipeable slideshow) ---------------- */
+let lightboxState = { photos: [], index: 0 };
+
+function openPhotoLightbox(photos, index){
+  lightboxState.photos = photos || [];
+  lightboxState.index = index || 0;
+  renderLightbox();
   document.getElementById('photoLightbox').classList.add('active');
+}
+function renderLightbox(){
+  const { photos, index } = lightboxState;
+  document.getElementById('lightboxImg').src = photos[index] || '';
+  const multi = photos.length > 1;
+  document.getElementById('lightboxPrev').style.display = multi ? 'flex' : 'none';
+  document.getElementById('lightboxNext').style.display = multi ? 'flex' : 'none';
+  const counter = document.getElementById('lightboxCounter');
+  counter.style.display = multi ? '' : 'none';
+  counter.textContent = multi ? (index+1) + ' / ' + photos.length : '';
+}
+function lightboxStep(delta){
+  const { photos } = lightboxState;
+  if(photos.length < 2) return;
+  lightboxState.index = (lightboxState.index + delta + photos.length) % photos.length;
+  renderLightbox();
 }
 function closePhotoLightbox(){
   document.getElementById('photoLightbox').classList.remove('active');
   document.getElementById('lightboxImg').src = '';
+  lightboxState = { photos: [], index: 0 };
 }
 document.getElementById('closeLightboxBtn').addEventListener('click', closePhotoLightbox);
+document.getElementById('lightboxPrev').addEventListener('click', e=>{ e.stopPropagation(); lightboxStep(-1); });
+document.getElementById('lightboxNext').addEventListener('click', e=>{ e.stopPropagation(); lightboxStep(1); });
 document.getElementById('photoLightbox').addEventListener('click', e=>{
   if(e.target.id==='photoLightbox') closePhotoLightbox();
 });
-function wirePhotoLightbox(){
-  document.querySelectorAll('#modalPhotosBlock img').forEach(img=>{
+document.addEventListener('keydown', e=>{
+  if(!document.getElementById('photoLightbox').classList.contains('active')) return;
+  if(e.key==='ArrowRight') lightboxStep(1);
+  else if(e.key==='ArrowLeft') lightboxStep(-1);
+  else if(e.key==='Escape') closePhotoLightbox();
+});
+
+// Swipe support for touch devices
+let lightboxTouchStartX = null;
+document.getElementById('photoLightbox').addEventListener('touchstart', e=>{
+  lightboxTouchStartX = e.touches[0].clientX;
+}, {passive:true});
+document.getElementById('photoLightbox').addEventListener('touchend', e=>{
+  if(lightboxTouchStartX===null) return;
+  const dx = e.changedTouches[0].clientX - lightboxTouchStartX;
+  if(Math.abs(dx) > 40){
+    if(dx < 0) lightboxStep(1); else lightboxStep(-1);
+  }
+  lightboxTouchStartX = null;
+});
+
+function wirePhotoLightbox(item){
+  const photos = item.photos || [];
+  document.querySelectorAll('#modalPhotosBlock img').forEach((img, i)=>{
     img.addEventListener('click', (e)=>{
       e.stopPropagation();
-      openPhotoLightbox(img.src);
+      openPhotoLightbox(photos, i);
     });
   });
 }
