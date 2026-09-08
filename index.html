@@ -776,6 +776,14 @@ function toast(msg){
   toastTimer = setTimeout(()=>t.classList.remove('show'), 2200);
 }
 
+// Diagnostic safety net: surfaces the exact error if something outside the
+// retry-protected paths still fails, instead of a silent/confusing failure.
+window.addEventListener('unhandledrejection', (e)=>{
+  console.error('Unhandled error:', e.reason);
+  const msg = (e.reason && (e.reason.message || e.reason.code)) || 'Unknown error';
+  toast('Unexpected error: ' + msg + ' (see console)');
+});
+
 /* ---------------- Auth ---------------- */
 function requireStaff(){
   if(!isStaff){
@@ -784,6 +792,33 @@ function requireStaff(){
     return false;
   }
   return true;
+}
+
+// Retries a Firestore write once after a short delay if it fails with a
+// permission error — covers the brief window right after signing in where
+// the connection can still be authenticated as the previous session.
+async function withAuthRetry(fn){
+  try{
+    return await fn();
+  }catch(e){
+    const transient = e && (e.code === 'permission-denied' || /permission/i.test(e.message||''));
+    if(transient){
+      await new Promise(res=>setTimeout(res, 500));
+      return await fn();
+    }
+    throw e;
+  }
+}
+
+// sSet swallows its own errors and returns null on failure rather than
+// throwing, so it needs its own retry wrapper instead of withAuthRetry.
+async function sSetWithRetry(key, value, shared){
+  let ok = await sSet(key, value, shared);
+  if(!ok){
+    await new Promise(res=>setTimeout(res, 500));
+    ok = await sSet(key, value, shared);
+  }
+  return ok;
 }
 
 function openAuthModal(){
@@ -856,6 +891,12 @@ auth.onAuthStateChanged(async (user)=>{
   }
   currentUser = user;
   isStaff = !user.isAnonymous;
+  if(isStaff){
+    // Firestore's connection can briefly still be authenticated as the
+    // previous (anonymous) session right after sign-in; forcing a fresh
+    // ID token here avoids the very next write hitting a stale credential.
+    try{ await user.getIdToken(true); }catch(e){ console.error('token refresh failed', e); }
+  }
   applyAuthGating();
   if(!state.dataLoaded){
     state.dataLoaded = true;
@@ -879,14 +920,14 @@ function switchTab(tab){
 /* ---------------- ID generation ---------------- */
 async function nextItemId(){
   const ref = db.collection('meta').doc('counter');
-  const n = await db.runTransaction(async (tx)=>{
+  const n = await withAuthRetry(()=> db.runTransaction(async (tx)=>{
     const doc = await tx.get(ref);
     let cur = 0;
     if(doc.exists && doc.data().value) cur = parseInt(doc.data().value,10) || 0;
     cur += 1;
     tx.set(ref, {value:String(cur)});
     return cur;
-  });
+  }));
   return 'AN-' + String(n).padStart(4,'0');
 }
 
@@ -929,13 +970,24 @@ function updateHeaderCount(){
   document.getElementById('headerCount').textContent = n + (n===1?' item':' items');
 }
 
+function allLocationsInUse(){
+  const set = new Set();
+  state.items.forEach(it=>{ if(it.location) set.add(it.location); });
+  return Array.from(set).sort((a,b)=>a.localeCompare(b));
+}
+
+function populateLocationFilter(){
+  const sel = document.getElementById('filterLocation');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="">All locations</option>' + allLocationsInUse().map(l=>`<option value="${esc(l)}">${esc(l)}</option>`).join('');
+  // keep the previous selection only if it's still a real option; otherwise reset to "All"
+  sel.value = Array.from(sel.options).some(o=>o.value===cur) ? cur : '';
+}
+
 function populateLocationSelects(){
-  const selFilter = document.getElementById('filterLocation');
   const selForm = document.getElementById('f-location');
-  const cur = selFilter.value;
-  selFilter.innerHTML = '<option value="">All locations</option>' + state.locations.map(l=>`<option value="${esc(l)}">${esc(l)}</option>`).join('');
-  selFilter.value = cur;
   selForm.innerHTML = state.locations.map(l=>`<option value="${esc(l)}">${esc(l)}</option>`).join('');
+  populateLocationFilter();
   populateTagFilter();
 }
 
@@ -1208,8 +1260,8 @@ document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
   let ok = true;
   let errMsg = '';
   try{
-    await db.collection('items').doc(id).set(publicData);
-    await privRef(id).set(privateData);
+    await withAuthRetry(()=> db.collection('items').doc(id).set(publicData));
+    await withAuthRetry(()=> privRef(id).set(privateData));
   }catch(e){ console.error('save item failed', e); ok = false; errMsg = e.message || e.code || 'unknown error'; }
 
   btn.disabled = false; btn.textContent = 'Save piece & generate QR tag';
@@ -1467,7 +1519,7 @@ async function handleModalPhotoFiles(id, fileList){
   if(!item) return;
   const newPhotos = await Promise.all(files.map(compressImageAsync));
   const photos = (item.photos||[]).concat(newPhotos);
-  await db.collection('items').doc(id).update({photos});
+  await withAuthRetry(()=> db.collection('items').doc(id).update({photos}));
   await loadItems();
   toast(newPhotos.length>1 ? 'Photos added' : 'Photo added');
   openItemModal(id, state.currentItemViaScan);
@@ -1479,7 +1531,7 @@ async function removePhotoFromItem(id, index){
   if(!item || !item.photos) return;
   const photos = item.photos.slice();
   photos.splice(index,1);
-  await db.collection('items').doc(id).update({photos});
+  await withAuthRetry(()=> db.collection('items').doc(id).update({photos}));
   await loadItems();
   toast('Photo removed');
   openItemModal(id, state.currentItemViaScan);
@@ -1541,12 +1593,12 @@ async function pairItems(id, otherId){
   let other = findItem(otherId);
   if(!other) other = await fetchItemPublic(otherId);
   if(!other){ toast('No item found for ' + otherId); return; }
-  await db.collection('items').doc(id).update({
+  await withAuthRetry(()=> db.collection('items').doc(id).update({
     pairedWith: firebase.firestore.FieldValue.arrayUnion(otherId)
-  });
-  await db.collection('items').doc(otherId).update({
+  }));
+  await withAuthRetry(()=> db.collection('items').doc(otherId).update({
     pairedWith: firebase.firestore.FieldValue.arrayUnion(id)
-  });
+  }));
   await loadItems();
   toast('Linked to ' + otherId);
   openItemModal(id, state.currentItemViaScan);
@@ -1554,12 +1606,12 @@ async function pairItems(id, otherId){
 
 async function unpairItems(id, otherId){
   if(!requireStaff()) return;
-  await db.collection('items').doc(id).update({
+  await withAuthRetry(()=> db.collection('items').doc(id).update({
     pairedWith: firebase.firestore.FieldValue.arrayRemove(otherId)
-  });
-  await db.collection('items').doc(otherId).update({
+  }));
+  await withAuthRetry(()=> db.collection('items').doc(otherId).update({
     pairedWith: firebase.firestore.FieldValue.arrayRemove(id)
-  });
+  }));
   await loadItems();
   toast('Unlinked from ' + otherId);
   openItemModal(id, state.currentItemViaScan);
@@ -1607,7 +1659,7 @@ async function saveName(id){
   if(!item) return;
   const val = document.getElementById('nameInput').value.trim();
   if(!val){ toast('Name cannot be empty'); return; }
-  await db.collection('items').doc(id).update({name: val});
+  await withAuthRetry(()=> db.collection('items').doc(id).update({name: val}));
   await loadItems();
   const updated = findItem(id);
   document.getElementById('nameBlock').innerHTML = renderNameView(updated);
@@ -1658,7 +1710,7 @@ async function savePrice(id){
   const item = findItem(id);
   if(!item) return;
   const newPrice = document.getElementById('priceInput').value;
-  await db.collection('items').doc(id).update({price: newPrice});
+  await withAuthRetry(()=> db.collection('items').doc(id).update({price: newPrice}));
   await loadItems();
   document.getElementById('priceBlock').innerHTML = renderPriceView(findItem(id));
   wirePriceBlock(id);
@@ -1725,7 +1777,7 @@ async function saveListingDetails(id){
     provenance: document.getElementById('ld-provenance').value.trim(),
     condition: document.getElementById('ld-condition').value.trim()
   };
-  await db.collection('items').doc(id).update(updates);
+  await withAuthRetry(()=> db.collection('items').doc(id).update(updates));
   await loadItems();
   document.getElementById('listingDetailsBlock').innerHTML = renderListingDetailsView(findItem(id));
   wireListingDetails(id);
@@ -1739,7 +1791,7 @@ async function addTagToItem(id, tag){
   const tags = item.tags || [];
   if(tags.includes(tag)) return;
   tags.push(tag);
-  await db.collection('items').doc(id).update({tags});
+  await withAuthRetry(()=> db.collection('items').doc(id).update({tags}));
   await loadItems();
   openItemModal(id, state.currentItemViaScan);
 }
@@ -1750,7 +1802,7 @@ async function removeTagFromItem(id, index){
   if(!item || !item.tags) return;
   const tags = item.tags.slice();
   tags.splice(index,1);
-  await db.collection('items').doc(id).update({tags});
+  await withAuthRetry(()=> db.collection('items').doc(id).update({tags}));
   await loadItems();
   openItemModal(id, state.currentItemViaScan);
 }
@@ -1766,10 +1818,10 @@ async function updateStatus(id, status){
   if(!requireStaff()) return;
   const item = findItem(id);
   if(!item) return;
-  await db.collection('items').doc(id).update({status});
-  await privRef(id).set({
+  await withAuthRetry(()=> db.collection('items').doc(id).update({status}));
+  await withAuthRetry(()=> privRef(id).set({
     history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: 'Marked as ' + status})
-  }, {merge:true});
+  }, {merge:true}));
 
   const paired = item.pairedWith || [];
   if(paired.length){
@@ -1777,10 +1829,10 @@ async function updateStatus(id, status){
     const applyAll = confirm(`${item.id} is part of a set with ${names}. Mark ${paired.length>1?'those pieces':'that piece'} as ${status} too?`);
     if(applyAll){
       for(const pid of paired){
-        await db.collection('items').doc(pid).update({status});
-        await privRef(pid).set({
+        await withAuthRetry(()=> db.collection('items').doc(pid).update({status}));
+        await withAuthRetry(()=> privRef(pid).set({
           history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: `Marked as ${status} (set with ${item.id})`})
-        }, {merge:true});
+        }, {merge:true}));
       }
     }
   }
@@ -1796,10 +1848,10 @@ async function moveItem(id){
   const newLoc = document.getElementById('moveLocSelect').value;
   if(!item || !newLoc || newLoc===item.location){ toast('Choose a different location'); return; }
   const from = item.location;
-  await privRef(id).set({
+  await withAuthRetry(()=> privRef(id).set({
     location: newLoc,
     history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: `Moved from ${from||'unassigned'} to ${newLoc}`})
-  }, {merge:true});
+  }, {merge:true}));
   await loadItems();
   toast(item.id + ' moved to ' + newLoc);
   openItemModal(id, state.currentItemViaScan);
@@ -1809,9 +1861,9 @@ async function deleteItem(id){
   if(!requireStaff()) return;
   if(!confirm('Delete this item permanently? This cannot be undone.')) return;
   try{
-    await privRef(id).delete();
+    await withAuthRetry(()=> privRef(id).delete());
   }catch(e){ /* private doc may not be readable/exist in edge cases — ignore */ }
-  await db.collection('items').doc(id).delete();
+  await withAuthRetry(()=> db.collection('items').doc(id).delete());
   document.getElementById('itemOverlay').classList.remove('active');
   await loadItems();
   toast('Item deleted');
@@ -1944,7 +1996,7 @@ async function removeLocation(loc, count){
   if(!requireStaff()) return;
   if(count>0){ toast(`Move the ${count} item(s) out of ${loc} before removing it`); return; }
   state.locations = state.locations.filter(l=>l!==loc);
-  await sSet('locations', JSON.stringify(state.locations), true);
+  await sSetWithRetry('locations', JSON.stringify(state.locations), true);
   renderLocations();
   populateLocationSelects();
   toast(loc + ' removed');
@@ -1957,7 +2009,7 @@ document.getElementById('addLocBtn').addEventListener('click', async ()=>{
   if(!val) return;
   if(state.locations.includes(val)){ toast('That location already exists'); return; }
   state.locations.push(val);
-  await sSet('locations', JSON.stringify(state.locations), true);
+  await sSetWithRetry('locations', JSON.stringify(state.locations), true);
   input.value='';
   renderLocations();
   populateLocationSelects();
