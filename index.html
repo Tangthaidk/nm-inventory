@@ -248,6 +248,20 @@
     position:absolute;top:-14px;right:-14px;background:var(--forest);color:#F3EFE2;
     border-radius:50%;width:34px;height:34px;font-size:20px;box-shadow:0 4px 14px rgba(0,0,0,0.3);
   }
+  .lightbox-nav{
+    position:absolute;top:50%;transform:translateY(-50%);
+    background:rgba(0,0,0,0.45);color:#fff;border:none;border-radius:50%;
+    width:42px;height:42px;font-size:26px;line-height:1;cursor:pointer;
+    display:flex;align-items:center;justify-content:center;z-index:2;
+  }
+  .lightbox-nav:hover{background:rgba(0,0,0,0.7);}
+  .lightbox-prev{left:8px;}
+  .lightbox-next{right:8px;}
+  .lightbox-counter{
+    position:absolute;bottom:12px;left:50%;transform:translateX(-50%);
+    color:#fff;background:rgba(0,0,0,0.45);padding:4px 12px;border-radius:20px;
+    font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:0.02em;
+  }
   #photoLightbox{background:rgba(20,18,15,0.85);}
 
   /* ---------- Scan ---------- */
@@ -313,7 +327,12 @@
     background:#fff;border:1px solid var(--line);border-radius:8px;padding:16px;
     display:flex;flex-direction:column;align-items:center;gap:6px;width:220px;margin:14px auto;
   }
-  .label-preview .lname{font-family:'Fraunces',serif;font-weight:600;font-size:14px;text-align:center;}
+  .label-preview .lname{
+    font-family:'Fraunces',serif;font-weight:600;text-align:center;
+    width:150px;line-height:1.25;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+    overflow:hidden;text-overflow:ellipsis;word-break:break-word;
+  }
   .label-preview .lprice{font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--brass-deep);}
   .label-preview .lid{font-family:'IBM Plex Mono',monospace;font-size:10px;color:#888;}
 
@@ -346,7 +365,12 @@
     display:flex;flex-direction:column;align-items:center;justify-content:center;gap:6px;padding:12px 10px;
   }
   .print-label img{width:130px;height:130px;}
-  .print-label .pn{font-family:'Fraunces',serif;font-weight:600;font-size:12px;text-align:center;line-height:1.25;}
+  .print-label .pn{
+    font-family:'Fraunces',serif;font-weight:600;text-align:center;line-height:1.25;
+    width:130px;
+    display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;
+    overflow:hidden;text-overflow:ellipsis;word-break:break-word;
+  }
   .print-label .pid{font-family:'IBM Plex Mono',monospace;font-size:9px;color:#666;}
 
   /* ---------- Auth ---------- */
@@ -583,7 +607,10 @@
 <div class="overlay" id="photoLightbox">
   <div class="lightbox-inner">
     <button class="modal-close lightbox-close" id="closeLightboxBtn">&times;</button>
+    <button class="lightbox-nav lightbox-prev" id="lightboxPrev">&#8249;</button>
     <img id="lightboxImg" src="" alt="">
+    <button class="lightbox-nav lightbox-next" id="lightboxNext">&#8250;</button>
+    <div class="lightbox-counter" id="lightboxCounter"></div>
   </div>
 </div>
 
@@ -1219,7 +1246,7 @@ function openItemModal(id, viaScan){
   state.currentItemViaScan = !!viaScan;
 
   document.getElementById('modalTitleRow').innerHTML = `
-    <span class="serif" style="font-size:19px;font-weight:600;">${esc(item.name)}</span>
+    <div id="nameBlock" style="display:flex;align-items:center;gap:8px;flex:1;min-width:150px;flex-wrap:wrap;">${renderNameView(item)}</div>
     <span class="id-tag">${esc(item.id)}</span>
     <span class="pill ${item.status}">${esc(item.status)}</span>
   `;
@@ -1322,8 +1349,9 @@ function openItemModal(id, viaScan){
   wireListingDetails(item.id);
   if(isStaff) wireModalPhotos(item.id);
   if(isStaff) wirePriceBlock(item.id);
+  if(isStaff) wireNameBlock(item.id);
   wirePairSection(item.id);
-  wirePhotoLightbox();
+  wirePhotoLightbox(item);
 }
 
 /* ---------------- Listing details (materials/dimensions/period/condition/provenance) ---------------- */
@@ -1332,24 +1360,69 @@ function compressImageAsync(file){
   return new Promise(resolve=>compressImage(file, resolve));
 }
 
-/* ---------------- Photo lightbox (view full-size) ---------------- */
-function openPhotoLightbox(src){
-  document.getElementById('lightboxImg').src = src;
+/* ---------------- Photo lightbox (swipeable slideshow) ---------------- */
+let lightboxState = { photos: [], index: 0 };
+
+function openPhotoLightbox(photos, index){
+  lightboxState.photos = photos || [];
+  lightboxState.index = index || 0;
+  renderLightbox();
   document.getElementById('photoLightbox').classList.add('active');
+}
+function renderLightbox(){
+  const { photos, index } = lightboxState;
+  document.getElementById('lightboxImg').src = photos[index] || '';
+  const multi = photos.length > 1;
+  document.getElementById('lightboxPrev').style.display = multi ? 'flex' : 'none';
+  document.getElementById('lightboxNext').style.display = multi ? 'flex' : 'none';
+  const counter = document.getElementById('lightboxCounter');
+  counter.style.display = multi ? '' : 'none';
+  counter.textContent = multi ? (index+1) + ' / ' + photos.length : '';
+}
+function lightboxStep(delta){
+  const { photos } = lightboxState;
+  if(photos.length < 2) return;
+  lightboxState.index = (lightboxState.index + delta + photos.length) % photos.length;
+  renderLightbox();
 }
 function closePhotoLightbox(){
   document.getElementById('photoLightbox').classList.remove('active');
   document.getElementById('lightboxImg').src = '';
+  lightboxState = { photos: [], index: 0 };
 }
 document.getElementById('closeLightboxBtn').addEventListener('click', closePhotoLightbox);
+document.getElementById('lightboxPrev').addEventListener('click', e=>{ e.stopPropagation(); lightboxStep(-1); });
+document.getElementById('lightboxNext').addEventListener('click', e=>{ e.stopPropagation(); lightboxStep(1); });
 document.getElementById('photoLightbox').addEventListener('click', e=>{
   if(e.target.id==='photoLightbox') closePhotoLightbox();
 });
-function wirePhotoLightbox(){
-  document.querySelectorAll('#modalPhotosBlock img').forEach(img=>{
+document.addEventListener('keydown', e=>{
+  if(!document.getElementById('photoLightbox').classList.contains('active')) return;
+  if(e.key==='ArrowRight') lightboxStep(1);
+  else if(e.key==='ArrowLeft') lightboxStep(-1);
+  else if(e.key==='Escape') closePhotoLightbox();
+});
+
+// Swipe support for touch devices
+let lightboxTouchStartX = null;
+document.getElementById('photoLightbox').addEventListener('touchstart', e=>{
+  lightboxTouchStartX = e.touches[0].clientX;
+}, {passive:true});
+document.getElementById('photoLightbox').addEventListener('touchend', e=>{
+  if(lightboxTouchStartX===null) return;
+  const dx = e.changedTouches[0].clientX - lightboxTouchStartX;
+  if(Math.abs(dx) > 40){
+    if(dx < 0) lightboxStep(1); else lightboxStep(-1);
+  }
+  lightboxTouchStartX = null;
+});
+
+function wirePhotoLightbox(item){
+  const photos = item.photos || [];
+  document.querySelectorAll('#modalPhotosBlock img').forEach((img, i)=>{
     img.addEventListener('click', (e)=>{
       e.stopPropagation();
-      openPhotoLightbox(img.src);
+      openPhotoLightbox(photos, i);
     });
   });
 }
@@ -1490,6 +1563,56 @@ async function unpairItems(id, otherId){
   await loadItems();
   toast('Unlinked from ' + otherId);
   openItemModal(id, state.currentItemViaScan);
+}
+
+/* ---------------- Name editing (staff only) ---------------- */
+function renderNameView(item){
+  return `
+    <span class="serif" style="font-size:19px;font-weight:600;">${esc(item.name)}</span>
+    ${isStaff ? `<button class="btn btn-outline small" id="editNameBtn" type="button">Edit</button>` : ''}
+  `;
+}
+
+function renderNameEdit(item){
+  return `
+    <input type="text" id="nameInput" value="${esc(item.name||'')}" style="flex:1;min-width:160px;">
+    <button class="btn btn-primary small" id="saveNameBtn" type="button">Save</button>
+    <button class="btn btn-outline small" id="cancelNameBtn" type="button">Cancel</button>
+  `;
+}
+
+function wireNameBlock(id){
+  const editBtn = document.getElementById('editNameBtn');
+  if(!editBtn) return;
+  editBtn.addEventListener('click', ()=>{
+    const item = findItem(id);
+    document.getElementById('nameBlock').innerHTML = renderNameEdit(item);
+    document.getElementById('saveNameBtn').addEventListener('click', ()=>saveName(id));
+    document.getElementById('cancelNameBtn').addEventListener('click', ()=>{
+      document.getElementById('nameBlock').innerHTML = renderNameView(item);
+      wireNameBlock(id);
+    });
+    const inp = document.getElementById('nameInput');
+    inp.addEventListener('keydown', e=>{
+      if(e.key==='Enter'){ e.preventDefault(); saveName(id); }
+    });
+    inp.focus();
+    inp.select();
+  });
+}
+
+async function saveName(id){
+  if(!requireStaff()) return;
+  const item = findItem(id);
+  if(!item) return;
+  const val = document.getElementById('nameInput').value.trim();
+  if(!val){ toast('Name cannot be empty'); return; }
+  await db.collection('items').doc(id).update({name: val});
+  await loadItems();
+  const updated = findItem(id);
+  document.getElementById('nameBlock').innerHTML = renderNameView(updated);
+  wireNameBlock(id);
+  toast('Name updated');
 }
 
 /* ---------------- Price editing (staff only) ---------------- */
@@ -1695,12 +1818,23 @@ async function deleteItem(id){
 }
 
 /* ---------------- QR label ---------------- */
+function fitNameStyle(name){
+  const len = (name || '').length;
+  let size;
+  if(len <= 16) size = 12;
+  else if(len <= 24) size = 11;
+  else if(len <= 34) size = 10;
+  else if(len <= 46) size = 9;
+  else size = 8;
+  return `font-size:${size}px;`;
+}
+
 function openLabelModal(item){
   const holder = document.getElementById('labelPreviewHolder');
   holder.innerHTML = `
     <div class="label-preview">
       <div id="qrHolder"></div>
-      <div class="lname">${esc(item.name)}</div>
+      <div class="lname" style="${fitNameStyle(item.name)}">${esc(item.name)}</div>
       <div class="lid">${esc(item.id)}</div>
     </div>`;
   new QRCode(document.getElementById('qrHolder'), {
@@ -1722,7 +1856,7 @@ function labelMarkup(l){
   return `
     <div class="print-label">
       ${l.src ? `<img src="${l.src}">` : ''}
-      <div class="pn">${esc(l.item.name)}</div>
+      <div class="pn" style="${fitNameStyle(l.item.name)}">${esc(l.item.name)}</div>
       <div class="pid">${esc(l.item.id)}</div>
     </div>`;
 }
