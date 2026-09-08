@@ -702,19 +702,6 @@ async function sSet(key, value, shared){
     return true;
   }catch(e){ console.error('set failed', key, e); return null; }
 }
-async function sDelete(key, shared){
-  try{ await keyToRef(key).delete(); return true; }
-  catch(e){ console.error('delete failed', key, e); return null; }
-}
-async function sList(prefix, shared){
-  try{
-    if(prefix === 'item:'){
-      const snap = await db.collection('items').get();
-      return snap.docs.map(d=>'item:'+d.id);
-    }
-    return [];
-  }catch(e){ console.error('list failed', prefix, e); return []; }
-}
 
 /* ---------------- Item read/write (split public/private) ----------------
    Public doc (items/{id}): name, category, price, description, tags,
@@ -738,15 +725,6 @@ async function fetchItemPrivate(id){
     // permission denied for guests — expected, not an error
     return { location: undefined, history: [] };
   }
-}
-async function fetchItemFull(id){
-  const pub = await fetchItemPublic(id);
-  if(!pub) return null;
-  if(isStaff){
-    const priv = await fetchItemPrivate(id);
-    return Object.assign(pub, priv);
-  }
-  return pub;
 }
 
 const DEFAULT_LOCATIONS = ["The Shop – New York City","The Cave","House","Other"];
