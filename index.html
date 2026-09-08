@@ -986,7 +986,9 @@ function populateLocationFilter(){
 
 function populateLocationSelects(){
   const selForm = document.getElementById('f-location');
-  selForm.innerHTML = state.locations.map(l=>`<option value="${esc(l)}">${esc(l)}</option>`).join('');
+  selForm.innerHTML = state.locations.length
+    ? state.locations.map(l=>`<option value="${esc(l)}">${esc(l)}</option>`).join('')
+    : `<option value="" disabled selected>No locations yet — add one in the Locations tab</option>`;
   populateLocationFilter();
   populateTagFilter();
 }
@@ -1309,7 +1311,9 @@ function openItemModal(id, viaScan){
         ? item.photos.map(p=>`<img src="${p}">`).join('')
         : `<div class="none">◆</div>`}</div>`;
 
-  const locOptions = state.locations.map(l=>`<option value="${esc(l)}" ${l===item.location?'selected':''}>${esc(l)}</option>`).join('');
+  const locOptions = state.locations.length
+    ? state.locations.map(l=>`<option value="${esc(l)}" ${l===item.location?'selected':''}>${esc(l)}</option>`).join('')
+    : `<option value="" disabled selected>No locations yet</option>`;
 
   const historyHtml = (item.history||[]).slice().reverse().map(h=>`
     <div class="history-item"><b>${new Date(h.ts).toLocaleString(undefined,{month:'short',day:'numeric',hour:'2-digit',minute:'2-digit'})}</b> — ${esc(h.text)}</div>
@@ -1354,9 +1358,10 @@ function openItemModal(id, viaScan){
 
     ${isStaff ? `
     <div class="move-row">
-      <select id="moveLocSelect">${locOptions}</select>
-      <button class="btn btn-primary small" id="moveBtn">Move item</button>
-    </div>` : ''}
+      <select id="moveLocSelect" ${state.locations.length ? '' : 'disabled'}>${locOptions}</select>
+      <button class="btn btn-primary small" id="moveBtn" ${state.locations.length ? '' : 'disabled'}>Move item</button>
+    </div>
+    ${state.locations.length ? '' : '<div class="helper-note">No locations set up yet — add one in the Locations tab to assign a location to this piece.</div>'}` : ''}
 
     ${isStaff ? `
     <div class="history">
