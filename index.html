@@ -9,7 +9,6 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-auth-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/10.13.1/firebase-firestore-compat.js"></script>
@@ -943,6 +942,40 @@ async function loadItems(){
   populateLocationSelects();
 }
 
+// Refreshes just one item after an edit, instead of re-fetching the whole
+// collection (which costs 2 reads per item, every single item, on every
+// save — expensive once the inventory grows). Used everywhere except the
+// initial page load, which genuinely needs everything at least once.
+async function refreshItem(id){
+  const pub = await fetchItemPublic(id);
+  if(!pub){
+    removeItemFromState(id);
+    return;
+  }
+  if(isStaff){
+    const priv = await fetchItemPrivate(id);
+    pub.location = priv.location;
+    pub.history = priv.history;
+  } else {
+    pub.location = undefined;
+    pub.history = [];
+  }
+  const idx = state.items.findIndex(it=>it.id===id);
+  if(idx >= 0) state.items[idx] = pub;
+  else state.items.push(pub);
+  state.items.sort((a,b)=> (b.createdAt||0) - (a.createdAt||0));
+  renderGrid();
+  updateHeaderCount();
+  populateLocationSelects();
+}
+
+function removeItemFromState(id){
+  state.items = state.items.filter(it=>it.id!==id);
+  renderGrid();
+  updateHeaderCount();
+  populateLocationSelects();
+}
+
 function updateHeaderCount(){
   const n = state.items.length;
   document.getElementById('headerCount').textContent = n + (n===1?' item':' items');
@@ -1118,7 +1151,11 @@ document.getElementById('confirmBulkPrintBtn').addEventListener('click', async (
   await printBulkLabels(items, layout);
 });
 
-document.getElementById('searchInput').addEventListener('input', renderGrid);
+let searchDebounceTimer;
+document.getElementById('searchInput').addEventListener('input', ()=>{
+  clearTimeout(searchDebounceTimer);
+  searchDebounceTimer = setTimeout(renderGrid, 200);
+});
 document.getElementById('filterLocation').addEventListener('change', renderGrid);
 document.getElementById('filterStatus').addEventListener('change', renderGrid);
 document.getElementById('filterTag').addEventListener('change', renderGrid);
@@ -1263,7 +1300,7 @@ document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
   pendingTags = [];
   renderTagChips();
 
-  await loadItems();
+  await refreshItem(id);
   toast(id + ' saved to inventory');
   openLabelModal(Object.assign({id}, publicData));
 });
@@ -1500,10 +1537,14 @@ async function handleModalPhotoFiles(id, fileList){
   if(!files.length) return;
   const item = findItem(id);
   if(!item) return;
-  const newPhotos = await Promise.all(files.map(compressImageAsync));
-  const photos = (item.photos||[]).concat(newPhotos);
+  const existing = item.photos || [];
+  if(existing.length >= 8){ toast('This piece already has 8 photos — remove one before adding more'); return; }
+  const room = 8 - existing.length;
+  const filesToAdd = files.slice(0, room);
+  const newPhotos = await Promise.all(filesToAdd.map(compressImageAsync));
+  const photos = existing.concat(newPhotos);
   await withAuthRetry(()=> db.collection('items').doc(id).update({photos}));
-  await loadItems();
+  await refreshItem(id);
   toast(newPhotos.length>1 ? 'Photos added' : 'Photo added');
   openItemModal(id, state.currentItemViaScan);
 }
@@ -1515,7 +1556,7 @@ async function removePhotoFromItem(id, index){
   const photos = item.photos.slice();
   photos.splice(index,1);
   await withAuthRetry(()=> db.collection('items').doc(id).update({photos}));
-  await loadItems();
+  await refreshItem(id);
   toast('Photo removed');
   openItemModal(id, state.currentItemViaScan);
 }
@@ -1582,7 +1623,8 @@ async function pairItems(id, otherId){
   await withAuthRetry(()=> db.collection('items').doc(otherId).update({
     pairedWith: firebase.firestore.FieldValue.arrayUnion(id)
   }));
-  await loadItems();
+  await refreshItem(id);
+  await refreshItem(otherId);
   toast('Linked to ' + otherId);
   openItemModal(id, state.currentItemViaScan);
 }
@@ -1595,7 +1637,8 @@ async function unpairItems(id, otherId){
   await withAuthRetry(()=> db.collection('items').doc(otherId).update({
     pairedWith: firebase.firestore.FieldValue.arrayRemove(id)
   }));
-  await loadItems();
+  await refreshItem(id);
+  await refreshItem(otherId);
   toast('Unlinked from ' + otherId);
   openItemModal(id, state.currentItemViaScan);
 }
@@ -1643,7 +1686,7 @@ async function saveName(id){
   const val = document.getElementById('nameInput').value.trim();
   if(!val){ toast('Name cannot be empty'); return; }
   await withAuthRetry(()=> db.collection('items').doc(id).update({name: val}));
-  await loadItems();
+  await refreshItem(id);
   const updated = findItem(id);
   document.getElementById('nameBlock').innerHTML = renderNameView(updated);
   wireNameBlock(id);
@@ -1694,7 +1737,7 @@ async function savePrice(id){
   if(!item) return;
   const newPrice = document.getElementById('priceInput').value;
   await withAuthRetry(()=> db.collection('items').doc(id).update({price: newPrice}));
-  await loadItems();
+  await refreshItem(id);
   document.getElementById('priceBlock').innerHTML = renderPriceView(findItem(id));
   wirePriceBlock(id);
   toast('Price updated');
@@ -1761,7 +1804,7 @@ async function saveListingDetails(id){
     condition: document.getElementById('ld-condition').value.trim()
   };
   await withAuthRetry(()=> db.collection('items').doc(id).update(updates));
-  await loadItems();
+  await refreshItem(id);
   document.getElementById('listingDetailsBlock').innerHTML = renderListingDetailsView(findItem(id));
   wireListingDetails(id);
   toast('Listing details saved');
@@ -1775,7 +1818,7 @@ async function addTagToItem(id, tag){
   if(tags.includes(tag)) return;
   tags.push(tag);
   await withAuthRetry(()=> db.collection('items').doc(id).update({tags}));
-  await loadItems();
+  await refreshItem(id);
   openItemModal(id, state.currentItemViaScan);
 }
 
@@ -1786,7 +1829,7 @@ async function removeTagFromItem(id, index){
   const tags = item.tags.slice();
   tags.splice(index,1);
   await withAuthRetry(()=> db.collection('items').doc(id).update({tags}));
-  await loadItems();
+  await refreshItem(id);
   openItemModal(id, state.currentItemViaScan);
 }
 
@@ -1816,11 +1859,12 @@ async function updateStatus(id, status){
         await withAuthRetry(()=> privRef(pid).set({
           history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: `Marked as ${status} (set with ${item.id})`})
         }, {merge:true}));
+        await refreshItem(pid);
       }
     }
   }
 
-  await loadItems();
+  await refreshItem(id);
   toast(item.id + ' marked ' + status);
   openItemModal(id, state.currentItemViaScan);
 }
@@ -1835,7 +1879,7 @@ async function moveItem(id){
     location: newLoc,
     history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: `Moved from ${from||'unassigned'} to ${newLoc}`})
   }, {merge:true}));
-  await loadItems();
+  await refreshItem(id);
   toast(item.id + ' moved to ' + newLoc);
   openItemModal(id, state.currentItemViaScan);
 }
@@ -1848,7 +1892,7 @@ async function deleteItem(id){
   }catch(e){ /* private doc may not be readable/exist in edge cases — ignore */ }
   await withAuthRetry(()=> db.collection('items').doc(id).delete());
   document.getElementById('itemOverlay').classList.remove('active');
-  await loadItems();
+  removeItemFromState(id);
   toast('Item deleted');
 }
 
@@ -2006,10 +2050,25 @@ let scanCanvas = document.createElement('canvas');
 let scanCtx = scanCanvas.getContext('2d');
 let rafId = null;
 
+let jsQRLoadPromise = null;
+function ensureJsQRLoaded(){
+  if(window.jsQR) return Promise.resolve();
+  if(jsQRLoadPromise) return jsQRLoadPromise;
+  jsQRLoadPromise = new Promise((resolve, reject)=>{
+    const s = document.createElement('script');
+    s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js';
+    s.onload = resolve;
+    s.onerror = reject;
+    document.head.appendChild(s);
+  });
+  return jsQRLoadPromise;
+}
+
 async function startCamera(){
   if(state.cameraStream) return;
   scanStatus.textContent = 'Requesting camera access…';
   try{
+    await ensureJsQRLoaded();
     const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
     state.cameraStream = stream;
     video.srcObject = stream;
