@@ -108,6 +108,17 @@
     padding:10px 14px;margin-bottom:16px;
   }
   .bulk-bar .mono{font-family:'IBM Plex Mono',monospace;font-size:12.5px;color:var(--ink-soft);margin-right:auto;}
+  .active-tag-filter{
+    display:flex;align-items:center;gap:8px;
+    background:var(--surface);border:1px solid var(--brass);border-radius:20px;
+    padding:6px 8px 6px 14px;margin-bottom:16px;width:fit-content;
+    font-family:'IBM Plex Mono',monospace;font-size:13px;color:var(--brass-deep);font-weight:600;
+  }
+  .active-tag-filter button{
+    background:var(--forest);color:#F3EFE2;border:none;border-radius:50%;
+    width:20px;height:20px;font-size:13px;line-height:1;cursor:pointer;
+  }
+  .load-more-wrap{display:flex;justify-content:center;margin-top:24px;}
   .select-check{
     position:absolute;top:6px;left:6px;z-index:2;
     background:rgba(247,243,232,0.92);border-radius:5px;padding:3px 4px;
@@ -465,8 +476,12 @@
         <option value="reserved">Reserved</option>
         <option value="sold">Sold</option>
       </select>
-      <select id="filterTag"><option value="">All tags</option></select>
+      <select id="filterTag" style="display:none;"><option value="">All tags</option></select>
       <button class="btn btn-outline small" id="selectModeBtn" style="display:none;">Select items</button>
+    </div>
+    <div class="active-tag-filter" id="activeTagFilter" style="display:none;">
+      Tag: <span id="activeTagFilterName"></span>
+      <button type="button" id="clearTagFilterBtn">&times;</button>
     </div>
     <div class="bulk-bar" id="bulkBar" style="display:none;">
       <span id="bulkCount" class="mono">0 selected</span>
@@ -480,6 +495,9 @@
     <div class="empty-state" id="emptyState" style="display:none;">
       <div class="serif">No pieces here yet</div>
       <div>Add your first item, or adjust your filters.</div>
+    </div>
+    <div class="load-more-wrap" id="loadMoreWrap" style="display:none;">
+      <button class="btn btn-outline" id="loadMoreBtn">Load more pieces</button>
     </div>
   </section>
 
@@ -781,8 +799,11 @@ let state = {
   currentItemId: null,
   dataLoaded: false,
   selectMode: false,
-  selectedIds: new Set()
+  selectedIds: new Set(),
+  pagination: { lastDoc: null, hasMore: true, loading: false, loadingAll: false }
 };
+
+const PAGE_SIZE = 24;
 
 let currentUser = null;
 let isStaff = false;
@@ -964,26 +985,57 @@ async function loadLocations(){
 }
 
 async function loadItems(){
+  state.items = [];
+  state.pagination = { lastDoc: null, hasMore: true, loading: false, loadingAll: false };
   document.getElementById('loadingInv').style.display = 'block';
-  const snap = await db.collection('items').get();
-  const items = snap.docs.map(d=>Object.assign({id:d.id}, d.data()));
+  document.getElementById('loadingInv').textContent = 'Loading inventory…';
+  await loadNextPage();
+  document.getElementById('loadingInv').style.display = 'none';
+}
+
+// Fetches the next batch of items (ordered newest-first) rather than the
+// whole collection at once, so the first page loads fast regardless of
+// how large the inventory grows.
+async function loadNextPage(){
+  if(state.pagination.loading || !state.pagination.hasMore) return;
+  state.pagination.loading = true;
+
+  let query = db.collection('items').orderBy('createdAt','desc').limit(PAGE_SIZE);
+  if(state.pagination.lastDoc) query = query.startAfter(state.pagination.lastDoc);
+  const snap = await query.get();
+  const newItems = snap.docs.map(d=>Object.assign({id:d.id}, d.data()));
 
   if(isStaff){
-    await Promise.all(items.map(async (it)=>{
+    await Promise.all(newItems.map(async (it)=>{
       const priv = await fetchItemPrivate(it.id);
       it.location = priv.location;
       it.history = priv.history;
     }));
   } else {
-    items.forEach(it=>{ it.location = undefined; it.history = []; });
+    newItems.forEach(it=>{ it.location = undefined; it.history = []; });
   }
 
-  items.sort((a,b)=> (b.createdAt||0) - (a.createdAt||0));
-  state.items = items;
-  document.getElementById('loadingInv').style.display = 'none';
-  renderGrid();
+  state.items = state.items.concat(newItems);
+  if(snap.docs.length){
+    state.pagination.lastDoc = snap.docs[snap.docs.length-1];
+  }
+  state.pagination.hasMore = snap.docs.length === PAGE_SIZE;
+  state.pagination.loading = false;
+
   updateHeaderCount();
   populateLocationSelects();
+  renderGrid();
+}
+
+// Search/filter needs to see the complete inventory to be accurate, so
+// loads everything remaining in the background when a filter is active.
+async function loadAllRemaining(){
+  if(state.pagination.loadingAll) return;
+  state.pagination.loadingAll = true;
+  while(state.pagination.hasMore){
+    await loadNextPage();
+  }
+  state.pagination.loadingAll = false;
 }
 
 // Refreshes just one item after an edit, instead of re-fetching the whole
@@ -1071,6 +1123,14 @@ function money(v){
 }
 
 /* ---------------- Render inventory grid ---------------- */
+function filtersActive(){
+  const q = document.getElementById('searchInput').value.trim();
+  const locF = document.getElementById('filterLocation').value;
+  const statF = document.getElementById('filterStatus').value;
+  const tagF = document.getElementById('filterTag').value;
+  return !!(q || locF || statF || tagF);
+}
+
 function getFilteredItems(){
   const q = document.getElementById('searchInput').value.trim().toLowerCase();
   const locF = document.getElementById('filterLocation').value;
@@ -1089,11 +1149,47 @@ function getFilteredItems(){
   });
 }
 
+function updateActiveTagFilterUI(){
+  const tagF = document.getElementById('filterTag').value;
+  const el = document.getElementById('activeTagFilter');
+  if(tagF){
+    el.style.display = 'flex';
+    document.getElementById('activeTagFilterName').textContent = tagF;
+  } else {
+    el.style.display = 'none';
+  }
+}
+
 function renderGrid(){
+  updateActiveTagFilterUI();
+  const active = filtersActive();
+
+  // Search/filter needs the complete inventory to be accurate — pull in
+  // whatever hasn't loaded yet before showing results, rather than
+  // silently searching only the first page.
+  if(active && (state.pagination.hasMore || state.pagination.loadingAll)){
+    document.getElementById('itemGrid').innerHTML = '';
+    document.getElementById('emptyState').style.display = 'none';
+    document.getElementById('loadMoreWrap').style.display = 'none';
+    document.getElementById('loadingInv').style.display = 'block';
+    document.getElementById('loadingInv').textContent = 'Loading full inventory to search…';
+    if(!state.pagination.loadingAll){
+      loadAllRemaining().then(()=>{
+        document.getElementById('loadingInv').textContent = 'Loading inventory…';
+        renderGrid();
+      });
+    }
+    return;
+  }
+  document.getElementById('loadingInv').style.display = 'none';
+
   const filtered = getFilteredItems();
 
   const grid = document.getElementById('itemGrid');
   const empty = document.getElementById('emptyState');
+  const loadMoreWrap = document.getElementById('loadMoreWrap');
+  loadMoreWrap.style.display = (!active && state.pagination.hasMore) ? 'flex' : 'none';
+
   if(filtered.length===0){
     grid.innerHTML=''; empty.style.display='block';
     return;
@@ -1103,7 +1199,7 @@ function renderGrid(){
   const selecting = isStaff && state.selectMode;
 
   grid.innerHTML = filtered.map(it=>{
-    const photo = (it.photos && it.photos[0]) ? `<img src="${it.photos[0]}" alt="">` : `<div class="placeholder">◆</div>`;
+    const photo = (it.photos && it.photos[0]) ? `<img src="${it.photos[0]}" alt="" loading="lazy" decoding="async">` : `<div class="placeholder">◆</div>`;
     const checked = state.selectedIds.has(it.id);
     return `
     <div class="card ${selecting?'selectable':''} ${checked?'selected':''}" data-id="${esc(it.id)}">
@@ -1156,6 +1252,7 @@ function toggleSelect(id){
   if(state.selectedIds.has(id)) state.selectedIds.delete(id);
   else state.selectedIds.add(id);
   renderGrid();
+
 }
 function updateBulkCount(){
   const el = document.getElementById('bulkCount');
@@ -1210,7 +1307,24 @@ document.getElementById('searchInput').addEventListener('input', ()=>{
   searchDebounceTimer = setTimeout(renderGrid, 200);
 });
 document.getElementById('filterLocation').addEventListener('change', renderGrid);
+document.getElementById('filterLocation').addEventListener('focus', ()=>{
+  if(state.pagination.hasMore && !state.pagination.loadingAll){
+    loadAllRemaining().then(populateLocationFilter);
+  }
+});
 document.getElementById('filterStatus').addEventListener('change', renderGrid);
+document.getElementById('loadMoreBtn').addEventListener('click', ()=>{
+  document.getElementById('loadingInv').style.display = 'block';
+  document.getElementById('loadingInv').textContent = 'Loading more…';
+  loadNextPage().then(()=>{
+    document.getElementById('loadingInv').style.display = 'none';
+    document.getElementById('loadingInv').textContent = 'Loading inventory…';
+  });
+});
+document.getElementById('clearTagFilterBtn').addEventListener('click', ()=>{
+  document.getElementById('filterTag').value = '';
+  renderGrid();
+});
 document.getElementById('filterTag').addEventListener('change', renderGrid);
 
 /* ---------------- Photo handling ---------------- */
