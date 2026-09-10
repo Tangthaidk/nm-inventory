@@ -172,6 +172,8 @@
     padding:2px 9px;border-radius:20px;letter-spacing:0.01em;
   }
   .tag-chip.on-card{background:#EFE8D6;color:var(--brass-deep);border-color:var(--brass);}
+  .tag-chip.tag-link{cursor:pointer;}
+  .tag-chip.tag-link:hover{background:var(--brass);color:#2A2622;}
   .tag-input-wrap{
     display:flex;flex-wrap:wrap;gap:6px;align-items:center;
     border:1px solid var(--line);border-radius:7px;background:var(--surface-2);
@@ -262,6 +264,24 @@
     font-family:'IBM Plex Mono',monospace;font-size:12px;letter-spacing:0.02em;
   }
   #photoLightbox{background:rgba(20,18,15,0.85);}
+
+  .crop-stage{position:relative;display:inline-block;max-width:100%;user-select:none;touch-action:none;}
+  .crop-stage img{display:block;max-width:100%;max-height:56vh;-webkit-user-drag:none;}
+  .crop-box{
+    position:absolute;border:2px solid var(--brass);
+    box-shadow:0 0 0 9999px rgba(20,18,15,0.55);
+    cursor:move;
+  }
+  .crop-handle{
+    position:absolute;right:-8px;bottom:-8px;width:18px;height:18px;
+    background:var(--brass);border:2px solid #fff;border-radius:50%;
+    cursor:nwse-resize;
+  }
+  .photo-thumb .crop-btn{
+    position:absolute;bottom:2px;left:2px;background:rgba(42,38,34,0.75);color:#fff;
+    border:none;border-radius:4px;width:20px;height:18px;font-size:11px;line-height:1;cursor:pointer;
+    z-index:2;
+  }
 
   /* ---------- Scan ---------- */
   .scan-wrap{display:flex;flex-direction:column;align-items:center;gap:18px;padding:10px 0;}
@@ -610,6 +630,30 @@
     <img id="lightboxImg" src="" alt="">
     <button class="lightbox-nav lightbox-next" id="lightboxNext">&#8250;</button>
     <div class="lightbox-counter" id="lightboxCounter"></div>
+  </div>
+</div>
+
+<!-- Photo crop modal -->
+<div class="overlay" id="cropOverlay">
+  <div class="modal" style="max-width:560px;">
+    <div class="modal-header">
+      <div class="modal-title-row"><span class="serif" style="font-size:17px;font-weight:600;">Crop photo</span></div>
+      <button class="modal-close" id="closeCropBtn">&times;</button>
+    </div>
+    <div class="modal-body">
+      <div class="crop-stage" id="cropStage">
+        <img id="cropImg" src="" alt="" draggable="false">
+        <div class="crop-box" id="cropBox">
+          <div class="crop-handle" data-handle="br"></div>
+        </div>
+      </div>
+      <div class="helper-note" style="margin-top:8px;">Drag the box to move it, drag the corner to resize.</div>
+      <div class="inline-actions" style="margin-top:12px;">
+        <button class="btn btn-primary small" id="applyCropBtn" type="button">Apply crop</button>
+        <button class="btn btn-outline small" id="resetCropBtn" type="button">Reset</button>
+        <button class="btn btn-outline small" id="cancelCropBtn" type="button">Cancel</button>
+      </div>
+    </div>
   </div>
 </div>
 
@@ -1071,7 +1115,7 @@ function renderGrid(){
       <div class="card-body">
         <div class="card-name">${esc(it.name || 'Untitled piece')}</div>
         ${isStaff ? `<div class="card-price">${money(it.price)}</div>` : `<div class="card-price" style="color:var(--ink-soft);font-size:12px;font-family:'IBM Plex Mono',monospace;">Scan tag for price</div>`}
-        ${(it.tags && it.tags.length) ? `<div class="tag-chips">${it.tags.map(t=>`<span class="tag-chip on-card">${esc(t)}</span>`).join('')}</div>` : ''}
+        ${(it.tags && it.tags.length) ? `<div class="tag-chips">${it.tags.map(t=>`<span class="tag-chip on-card tag-link" data-tag-filter="${esc(t)}">${esc(t)}</span>`).join('')}</div>` : ''}
         ${(it.pairedWith && it.pairedWith.length) ? `<div class="set-badge">⛓ Set of ${it.pairedWith.length+1}</div>` : ''}
         <div class="card-meta">
           ${isStaff ? `<span class="loc-label">${esc(it.location||'—')}</span>` : '<span></span>'}
@@ -1088,6 +1132,15 @@ function renderGrid(){
       } else {
         openItemModal(c.dataset.id, false);
       }
+    });
+  });
+  grid.querySelectorAll('.tag-link').forEach(el=>{
+    el.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      const tag = el.dataset.tagFilter;
+      const sel = document.getElementById('filterTag');
+      sel.value = Array.from(sel.options).some(o=>o.value===tag) ? tag : '';
+      renderGrid();
     });
   });
   grid.querySelectorAll('input[data-select-id]').forEach(cb=>{
@@ -1233,12 +1286,23 @@ function renderThumbs(){
   holder.innerHTML = pendingPhotos.map((p,i)=>`
     <div class="photo-thumb">
       <img src="${p}">
+      <button class="crop-btn" data-crop-i="${i}" type="button" title="Crop">&#9986;</button>
       <button class="rm" data-i="${i}">&times;</button>
     </div>`).join('');
   holder.querySelectorAll('.rm').forEach(b=>{
     b.addEventListener('click', ()=>{
       pendingPhotos.splice(parseInt(b.dataset.i,10),1);
       renderThumbs();
+    });
+  });
+  holder.querySelectorAll('.crop-btn').forEach(b=>{
+    b.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      const i = parseInt(b.dataset.cropI,10);
+      openCropModal(pendingPhotos[i], (cropped)=>{
+        pendingPhotos[i] = cropped;
+        renderThumbs();
+      });
     });
   });
 }
@@ -1435,6 +1499,100 @@ function compressImageAsync(file){
 /* ---------------- Photo lightbox (swipeable slideshow) ---------------- */
 let lightboxState = { photos: [], index: 0 };
 
+/* ---------------- Photo crop (drag box, corner resize) ---------------- */
+let cropOnApply = null;
+let cropDrag = null; // {mode:'move'|'resize', startX, startY, startLeft, startTop, startW, startH}
+
+function initCropBox(){
+  const img = document.getElementById('cropImg');
+  const box = document.getElementById('cropBox');
+  const w = img.clientWidth, h = img.clientHeight;
+  const boxW = w*0.8, boxH = h*0.8;
+  box.style.left = ((w-boxW)/2)+'px';
+  box.style.top = ((h-boxH)/2)+'px';
+  box.style.width = boxW+'px';
+  box.style.height = boxH+'px';
+}
+
+function openCropModal(src, onApply){
+  cropOnApply = onApply;
+  const img = document.getElementById('cropImg');
+  img.onload = initCropBox;
+  img.src = src;
+  document.getElementById('cropOverlay').classList.add('active');
+}
+function closeCropModal(){
+  document.getElementById('cropOverlay').classList.remove('active');
+  document.getElementById('cropImg').src = '';
+  cropOnApply = null;
+}
+document.getElementById('closeCropBtn').addEventListener('click', closeCropModal);
+document.getElementById('cancelCropBtn').addEventListener('click', closeCropModal);
+document.getElementById('resetCropBtn').addEventListener('click', initCropBox);
+
+document.getElementById('cropBox').addEventListener('pointerdown', (e)=>{
+  const isHandle = e.target.classList.contains('crop-handle');
+  const box = document.getElementById('cropBox');
+  cropDrag = {
+    mode: isHandle ? 'resize' : 'move',
+    startX: e.clientX, startY: e.clientY,
+    startLeft: box.offsetLeft, startTop: box.offsetTop,
+    startW: box.offsetWidth, startH: box.offsetHeight
+  };
+  e.preventDefault();
+  e.stopPropagation();
+});
+document.addEventListener('pointermove', (e)=>{
+  if(!cropDrag) return;
+  const stage = document.getElementById('cropStage');
+  const img = document.getElementById('cropImg');
+  const box = document.getElementById('cropBox');
+  const dx = e.clientX - cropDrag.startX;
+  const dy = e.clientY - cropDrag.startY;
+  const maxW = img.clientWidth, maxH = img.clientHeight;
+
+  if(cropDrag.mode === 'move'){
+    let left = cropDrag.startLeft + dx;
+    let top = cropDrag.startTop + dy;
+    left = Math.max(0, Math.min(left, maxW - box.offsetWidth));
+    top = Math.max(0, Math.min(top, maxH - box.offsetHeight));
+    box.style.left = left+'px';
+    box.style.top = top+'px';
+  } else {
+    let w = Math.max(30, cropDrag.startW + dx);
+    let h = Math.max(30, cropDrag.startH + dy);
+    w = Math.min(w, maxW - box.offsetLeft);
+    h = Math.min(h, maxH - box.offsetTop);
+    box.style.width = w+'px';
+    box.style.height = h+'px';
+  }
+});
+document.addEventListener('pointerup', ()=>{ cropDrag = null; });
+
+document.getElementById('applyCropBtn').addEventListener('click', ()=>{
+  const img = document.getElementById('cropImg');
+  const box = document.getElementById('cropBox');
+  const scaleX = img.naturalWidth / img.clientWidth;
+  const scaleY = img.naturalHeight / img.clientHeight;
+  const sx = box.offsetLeft * scaleX;
+  const sy = box.offsetTop * scaleY;
+  const sw = box.offsetWidth * scaleX;
+  const sh = box.offsetHeight * scaleY;
+
+  const maxW = 640;
+  const outW = Math.min(maxW, sw);
+  const outH = sh * (outW/sw);
+  const canvas = document.createElement('canvas');
+  canvas.width = outW; canvas.height = outH;
+  const ctx = canvas.getContext('2d');
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, outW, outH);
+  const dataUrl = canvas.toDataURL('image/jpeg', 0.82);
+
+  const cb = cropOnApply;
+  closeCropModal();
+  if(cb) cb(dataUrl);
+});
+
 function openPhotoLightbox(photos, index){
   lightboxState.photos = photos || [];
   lightboxState.index = index || 0;
@@ -1503,6 +1661,7 @@ function renderModalPhotosEditable(item){
   const thumbs = (item.photos||[]).map((p,i)=>`
     <div class="photo-thumb">
       <img src="${p}">
+      <button class="crop-btn" data-crop-i="${i}" type="button" title="Crop">&#9986;</button>
       <button class="rm" type="button" data-rm-photo="${i}">&times;</button>
     </div>`).join('');
   return `
@@ -1529,6 +1688,29 @@ function wireModalPhotos(id){
       removePhotoFromItem(id, parseInt(btn.dataset.rmPhoto,10));
     });
   });
+  document.querySelectorAll('#modalPhotoThumbs button[data-crop-i]').forEach(btn=>{
+    btn.addEventListener('click', (e)=>{
+      e.stopPropagation();
+      const item = findItem(id);
+      if(!item) return;
+      const i = parseInt(btn.dataset.cropI,10);
+      openCropModal(item.photos[i], (cropped)=>{
+        savePhotoAt(id, i, cropped);
+      });
+    });
+  });
+}
+
+async function savePhotoAt(id, index, dataUrl){
+  if(!requireStaff()) return;
+  const item = findItem(id);
+  if(!item || !item.photos) return;
+  const photos = item.photos.slice();
+  photos[index] = dataUrl;
+  await withAuthRetry(()=> db.collection('items').doc(id).update({photos}));
+  await refreshItem(id);
+  toast('Photo cropped');
+  openItemModal(id, state.currentItemViaScan);
 }
 
 async function handleModalPhotoFiles(id, fileList){
