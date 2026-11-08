@@ -9,7 +9,7 @@
 <link rel="manifest" href="manifest.json">
 <meta name="theme-color" content="#20262E">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
 <meta name="apple-mobile-web-app-title" content="Provenance">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,500;0,9..144,600;1,9..144,500&family=Inter:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -372,6 +372,20 @@
   .toast.show{opacity:1;transform:translateX(-50%) translateY(-4px);}
 
   .helper-note{font-size:12px;color:var(--ink-soft);margin-top:4px;}
+  .faint-hint{font-style:italic;opacity:0.6;}
+
+  /* ---------- Staff notes ---------- */
+  .notes-section{margin:18px 0 4px;border-top:1px solid var(--line);padding-top:14px;}
+  .notes-section h4{font-size:11px;text-transform:uppercase;letter-spacing:0.06em;color:var(--ink-soft);margin:0 0 4px;}
+  .notes-sub{font-size:11.5px;color:var(--ink-soft);font-style:italic;margin-bottom:10px;}
+  .note-item{background:var(--surface);border:1px solid var(--line);border-left:3px solid var(--brass);border-radius:7px;padding:9px 12px;margin-bottom:8px;}
+  .note-meta{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--ink-soft);display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:3px;}
+  .note-meta button{background:none;border:none;color:var(--ink-soft);cursor:pointer;font-size:14px;line-height:1;padding:0 2px;}
+  .note-meta button:hover{color:var(--rust);}
+  .note-text{font-size:13.5px;line-height:1.45;white-space:pre-wrap;word-break:break-word;}
+  .note-add{display:flex;flex-direction:column;gap:8px;margin-top:6px;}
+  .note-add textarea{min-height:60px;}
+  .note-badge{font-family:'IBM Plex Mono',monospace;font-size:11px;color:var(--brass-deep);font-weight:600;}
   .loading-msg{text-align:center;padding:60px;color:var(--ink-soft);font-family:'IBM Plex Mono',monospace;font-size:13px;}
 
   /* ---------- Print label ---------- */
@@ -435,6 +449,20 @@
   .listing-edit-grid .field{margin-bottom:0;}
   .listing-edit-grid .field.full{grid-column:1/-1;}
   .inline-actions{display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;}
+
+  /* ---------- Touch devices (iPhone) ---------- */
+  /* iOS Safari zooms the page in when a field's text is under 16px — and in
+     the home-screen app there's no way to zoom back out. */
+  @media (pointer:coarse){
+    input[type=text], input[type=number], input[type=search], input[type=password], input[type=email], select, textarea{font-size:16px;}
+    nav.tabs button{min-height:44px;}
+    .btn.small{min-height:40px;}
+    .modal-close{min-width:44px;min-height:44px;}
+    .photo-thumb .rm{width:26px;height:26px;font-size:15px;}
+    .photo-thumb .cover-btn{width:28px;height:26px;font-size:14px;}
+    .note-meta button, .tag-chip.removable button, .pair-chip button{min-width:28px;min-height:28px;}
+  }
+  button, .card, .btn{touch-action:manipulation;}
 </style>
 </head>
 <body>
@@ -770,11 +798,11 @@ async function fetchItemPublic(id){
 async function fetchItemPrivate(id){
   try{
     const snap = await privRef(id).get();
-    if(!snap.exists) return {location:'', history:[]};
-    return { location: snap.data().location || '', history: snap.data().history || [] };
+    if(!snap.exists) return {location:'', history:[], comments:[]};
+    return { location: snap.data().location || '', history: snap.data().history || [], comments: snap.data().comments || [] };
   }catch(e){
     // permission denied for guests — expected, not an error
-    return { location: undefined, history: [] };
+    return { location: undefined, history: [], comments: [] };
   }
 }
 
@@ -924,6 +952,7 @@ auth.onAuthStateChanged(async (user)=>{
     try{ await auth.signInAnonymously(); }catch(e){ console.error('anon sign-in failed', e); }
     return;
   }
+  const wasStaff = isStaff;
   currentUser = user;
   isStaff = !user.isAnonymous;
   if(isStaff){
@@ -936,6 +965,16 @@ auth.onAuthStateChanged(async (user)=>{
   if(!state.dataLoaded){
     state.dataLoaded = true;
     init();
+  } else if(wasStaff !== isStaff){
+    // Staff-only data (location, notes, history) is fetched at load time.
+    // After signing in or out, reload so staff actually get it — and a
+    // signed-out session doesn't keep it in memory.
+    init().then(()=>{
+      if(state.currentItemId && document.getElementById('itemOverlay').classList.contains('active')){
+        if(findItem(state.currentItemId)) openItemModal(state.currentItemId, state.currentItemViaScan);
+        else document.getElementById('itemOverlay').classList.remove('active');
+      }
+    });
   }
 });
 
@@ -968,19 +1007,45 @@ async function nextItemId(){
 }
 
 /* ---------------- Load data ---------------- */
+// A failed READ must never be mistaken for "no locations saved yet" — doing so
+// would overwrite the team's real list with the defaults. Only a successful
+// read that finds no document seeds the defaults.
 async function loadLocations(){
-  let raw = await sGet('locations', true);
-  if(!raw){
+  state.locationsLoadFailed = false;
+  let snap;
+  try{
+    snap = await keyToRef('locations').get();
+  }catch(e){
+    console.error('locations read failed', e);
+    state.locations = DEFAULT_LOCATIONS.slice();
+    if(isStaff){
+      state.locationsLoadFailed = true;
+      toast('Could not load locations — reload before editing them');
+    }
+    return;
+  }
+  if(!snap.exists){
     state.locations = DEFAULT_LOCATIONS.slice();
     if(isStaff) await sSet('locations', JSON.stringify(state.locations), true);
-  } else {
-    try{ state.locations = JSON.parse(raw); }catch(e){ state.locations = DEFAULT_LOCATIONS.slice(); }
+    return;
+  }
+  try{
+    const parsed = JSON.parse(snap.data().value);
+    if(!Array.isArray(parsed)) throw new Error('locations is not a list');
+    state.locations = parsed.filter(v=>typeof v === 'string');
+  }catch(e){
+    console.error('locations parse failed', e);
+    state.locations = DEFAULT_LOCATIONS.slice();
+    if(isStaff){
+      state.locationsLoadFailed = true;
+      toast('Saved locations look damaged — editing them is disabled');
+    }
   }
 }
 
 async function loadItems(){
   state.items = [];
-  state.pagination = { lastDoc: null, hasMore: true, loading: false, loadingAll: false };
+  state.pagination = { lastDoc: null, hasMore: true, loading: false, loadingAll: false, promise: null, allPromise: null, error: false };
   document.getElementById('loadingInv').style.display = 'block';
   document.getElementById('loadingInv').textContent = 'Loading inventory…';
   await loadNextPage();
@@ -989,47 +1054,80 @@ async function loadItems(){
 
 // Fetches the next batch of items (ordered newest-first) rather than the
 // whole collection at once, so the first page loads fast regardless of
-// how large the inventory grows.
-async function loadNextPage(){
-  if(state.pagination.loading || !state.pagination.hasMore) return;
-  state.pagination.loading = true;
+// how large the inventory grows. Returns true on success, false on failure
+// (never throws), and joins a load that is already in flight.
+function loadNextPage(){
+  const p = state.pagination;
+  if(p.loading) return p.promise;
+  if(!p.hasMore) return Promise.resolve();
+  p.loading = true;
+  p.error = false;
+  p.promise = (async ()=>{
+    try{
+      let query = db.collection('items').orderBy('createdAt','desc').limit(PAGE_SIZE);
+      if(p.lastDoc) query = query.startAfter(p.lastDoc);
+      const snap = await query.get();
+      const newItems = snap.docs.map(d=>Object.assign({id:d.id}, d.data()));
 
-  let query = db.collection('items').orderBy('createdAt','desc').limit(PAGE_SIZE);
-  if(state.pagination.lastDoc) query = query.startAfter(state.pagination.lastDoc);
-  const snap = await query.get();
-  const newItems = snap.docs.map(d=>Object.assign({id:d.id}, d.data()));
+      if(isStaff){
+        await Promise.all(newItems.map(async (it)=>{
+          const priv = await fetchItemPrivate(it.id);
+          it.location = priv.location;
+          it.history = priv.history;
+          it.comments = priv.comments;
+        }));
+      } else {
+        newItems.forEach(it=>{ it.location = undefined; it.history = []; it.comments = []; });
+      }
 
-  if(isStaff){
-    await Promise.all(newItems.map(async (it)=>{
-      const priv = await fetchItemPrivate(it.id);
-      it.location = priv.location;
-      it.history = priv.history;
-    }));
-  } else {
-    newItems.forEach(it=>{ it.location = undefined; it.history = []; });
-  }
-
-  state.items = state.items.concat(newItems);
-  if(snap.docs.length){
-    state.pagination.lastDoc = snap.docs[snap.docs.length-1];
-  }
-  state.pagination.hasMore = snap.docs.length === PAGE_SIZE;
-  state.pagination.loading = false;
-
-  updateHeaderCount();
-  populateLocationSelects();
-  renderGrid();
+      // An item can already be in state (refreshed individually, e.g. a set
+      // partner on a later page) — don't add it twice.
+      const known = new Set(state.items.map(i=>i.id));
+      state.items = state.items.concat(newItems.filter(it=>!known.has(it.id)));
+      if(snap.docs.length) p.lastDoc = snap.docs[snap.docs.length-1];
+      p.hasMore = snap.docs.length === PAGE_SIZE;
+      return true;
+    }catch(e){
+      console.error('page load failed', e);
+      p.error = true;
+      toast('Could not load inventory: ' + (e.message || e.code || 'network error'));
+      return false;
+    }finally{
+      p.loading = false;
+    }
+  })().then(ok=>{
+    updateHeaderCount();
+    populateLocationSelects();
+    // while a bulk load runs for another tab (Trash / CSV), don't re-render a hidden grid
+    if(!(p.loadingAll && state.activeTab !== 'inventory')) renderGrid();
+    return ok;
+  });
+  return p.promise;
 }
 
 // Search/filter needs to see the complete inventory to be accurate, so
-// loads everything remaining in the background when a filter is active.
-async function loadAllRemaining(){
-  if(state.pagination.loadingAll) return;
-  state.pagination.loadingAll = true;
-  while(state.pagination.hasMore){
-    await loadNextPage();
-  }
-  state.pagination.loadingAll = false;
+// loads everything remaining when a filter is active, the Trash opens, or
+// a CSV is exported. All callers share one in-flight promise, so nobody
+// proceeds on a partial list, and a failed page stops the loop instead of
+// spinning forever.
+function loadAllRemaining(){
+  const p = state.pagination;
+  if(p.allPromise) return p.allPromise;
+  p.loadingAll = true;
+  p.allPromise = (async ()=>{
+    try{
+      while(p.hasMore){
+        const ok = await loadNextPage();
+        if(ok === false) break;
+      }
+    }finally{
+      p.loadingAll = false;
+      p.allPromise = null;
+    }
+    renderGrid();
+    return !p.hasMore;
+  })();
+  return p.allPromise;
 }
 
 // Refreshes just one item after an edit, instead of re-fetching the whole
@@ -1046,9 +1144,11 @@ async function refreshItem(id){
     const priv = await fetchItemPrivate(id);
     pub.location = priv.location;
     pub.history = priv.history;
+    pub.comments = priv.comments;
   } else {
     pub.location = undefined;
     pub.history = [];
+    pub.comments = [];
   }
   const idx = state.items.findIndex(it=>it.id===id);
   if(idx >= 0) state.items[idx] = pub;
@@ -1076,11 +1176,14 @@ function activeItems(){
 
 function updateHeaderCount(){
   const n = activeItems().length;
-  document.getElementById('headerCount').textContent = n + (n===1?' item':' items');
+  document.getElementById('headerCount').textContent = n + (state.pagination.hasMore?'+':'') + (n===1&&!state.pagination.hasMore?' item':' items');
 }
 
+// The configured locations plus any in use by loaded items, so the filter
+// lists every location without having to download the whole inventory
+// just because someone tapped the dropdown.
 function allLocationsInUse(){
-  const set = new Set();
+  const set = new Set(state.locations);
   activeItems().forEach(it=>{ if(it.location) set.add(it.location); });
   return Array.from(set).sort((a,b)=>a.localeCompare(b));
 }
@@ -1113,6 +1216,19 @@ function populateTagFilter(){
   const cur = sel.value;
   sel.innerHTML = '<option value="">All tags</option>' + allTags().map(t=>`<option value="${esc(t)}">${esc(t)}</option>`).join('');
   sel.value = cur;
+}
+
+// Photos come from the database, so only ever render real image data URIs —
+// anything else (e.g. a string crafted to break out of the src attribute) is
+// dropped instead of being written into the page.
+function safePhoto(p){
+  return (typeof p === 'string'
+    && /^data:image\/(jpeg|png|webp);base64,/.test(p)
+    && !/["'<>\s]/.test(p)) ? p : '';
+}
+// Status is used as a CSS class name, so it must be one of the known values.
+function safeStatus(s){
+  return ['available','reserved','sold'].includes(s) ? s : 'available';
 }
 
 function esc(s){
@@ -1169,7 +1285,7 @@ function renderGrid(){
   // Search/filter needs the complete inventory to be accurate — pull in
   // whatever hasn't loaded yet before showing results, rather than
   // silently searching only the first page.
-  if(active && (state.pagination.hasMore || state.pagination.loadingAll)){
+  if(active && !state.pagination.error && (state.pagination.hasMore || state.pagination.loadingAll)){
     document.getElementById('itemGrid').innerHTML = '';
     document.getElementById('emptyState').style.display = 'none';
     document.getElementById('loadMoreWrap').style.display = 'none';
@@ -1201,7 +1317,8 @@ function renderGrid(){
   const selecting = isStaff && state.selectMode;
 
   grid.innerHTML = filtered.map(it=>{
-    const photo = (it.photos && it.photos[0]) ? `<img src="${it.photos[0]}" alt="" loading="lazy" decoding="async">` : `<div class="placeholder">◆</div>`;
+    const cover = safePhoto(it.photos && it.photos[0]);
+    const photo = cover ? `<img src="${cover}" alt="${esc(it.name || 'Photo of piece')}" loading="lazy" decoding="async">` : `<div class="placeholder">◆</div>`;
     const checked = state.selectedIds.has(it.id);
     return `
     <div class="card ${selecting?'selectable':''} ${checked?'selected':''}" data-id="${esc(it.id)}">
@@ -1215,9 +1332,10 @@ function renderGrid(){
         ${isStaff ? `<div class="card-price">${money(it.price)}</div>` : `<div class="card-price" style="color:var(--ink-soft);font-size:12px;font-family:'IBM Plex Mono',monospace;">Scan tag for price</div>`}
         ${(it.tags && it.tags.length) ? `<div class="tag-chips">${it.tags.map(t=>`<span class="tag-chip on-card tag-link" data-tag-filter="${esc(t)}">${esc(t)}</span>`).join('')}</div>` : ''}
         ${(it.pairedWith && it.pairedWith.length) ? `<div class="set-badge">⛓ Set of ${it.pairedWith.length+1}</div>` : ''}
+        ${(isStaff && it.comments && it.comments.length) ? `<div class="note-badge">💬 ${it.comments.length} note${it.comments.length===1?'':'s'}</div>` : ''}
         <div class="card-meta">
           ${isStaff ? `<span class="loc-label">${esc(it.location||'—')}</span>` : '<span></span>'}
-          <span class="pill ${it.status}">${esc(it.status)}</span>
+          <span class="pill ${safeStatus(it.status)}">${esc(safeStatus(it.status))}</span>
         </div>
       </div>
     </div>`;
@@ -1309,11 +1427,6 @@ document.getElementById('searchInput').addEventListener('input', ()=>{
   searchDebounceTimer = setTimeout(renderGrid, 200);
 });
 document.getElementById('filterLocation').addEventListener('change', renderGrid);
-document.getElementById('filterLocation').addEventListener('focus', ()=>{
-  if(state.pagination.hasMore && !state.pagination.loadingAll){
-    loadAllRemaining().then(populateLocationFilter);
-  }
-});
 document.getElementById('filterStatus').addEventListener('change', renderGrid);
 document.getElementById('loadMoreBtn').addEventListener('click', ()=>{
   document.getElementById('loadingInv').style.display = 'block';
@@ -1359,7 +1472,10 @@ function renderTagChips(){
 const photoDrop = document.getElementById('photoDrop');
 const photoInput = document.getElementById('photoInput');
 photoDrop.addEventListener('click', ()=>photoInput.click());
-photoInput.addEventListener('change', e=>handleFiles(e.target.files));
+photoInput.addEventListener('change', e=>{
+  handleFiles(e.target.files);   // copies the file list synchronously
+  e.target.value = '';           // so picking the same file again still fires "change"
+});
 photoDrop.addEventListener('dragover', e=>{e.preventDefault(); photoDrop.style.borderColor='var(--brass)';});
 photoDrop.addEventListener('dragleave', ()=>{photoDrop.style.borderColor='';});
 photoDrop.addEventListener('drop', e=>{
@@ -1383,15 +1499,19 @@ const PHOTO_STEPS = [
 function photosSize(arr){ return (arr||[]).reduce((n,p)=>n+p.length, 0); }
 
 async function handleFiles(fileList){
-  const files = Array.from(fileList).filter(f=>f.type.startsWith('image/')).slice(0,8);
-  let skipped = 0;
+  const room = Math.max(0, 8 - pendingPhotos.length);
+  const picked = Array.from(fileList).filter(f=>f.type.startsWith('image/'));
+  if(!room){ toast('A piece can have up to 8 photos'); return; }
+  const files = picked.slice(0, room);
+  let skipped = picked.length - files.length;
+  if(files.length) toast('Processing ' + files.length + ' photo' + (files.length>1 ? 's' : '') + '…');
   for(const file of files){
     const budget = PHOTO_BUDGET - photosSize(pendingPhotos);
     const dataUrl = await compressToFit(file, budget);
     if(dataUrl){ pendingPhotos.push(dataUrl); renderThumbs(); }
     else skipped++;
   }
-  if(skipped) toast(skipped + ' photo(s) skipped — this piece is out of photo space. Remove one to add more.');
+  if(skipped) toast(skipped + ' photo(s) skipped — unreadable image, or this piece is out of photo space (max 8).');
 }
 
 // Draws the image at `edge` px on its long edge (works for portrait and
@@ -1430,6 +1550,8 @@ async function compressToFit(file, budget){
   try{ img = await loadImageFromFile(file); }catch(e){ return null; }
   for(const step of PHOTO_STEPS){
     const out = renderJpeg(img, step.edge, step.q);
+    // toDataURL returns a tiny "data:," string if the canvas was too big to encode
+    if(!out.startsWith('data:image/jpeg')) continue;
     if(out.length <= budget) return out;
   }
   return null;
@@ -1444,8 +1566,8 @@ function renderThumbs(){
   const holder = document.getElementById('photoThumbs');
   holder.innerHTML = pendingPhotos.map((p,i)=>`
     <div class="photo-thumb">
-      <img src="${p}">
-      <button class="rm" data-i="${i}">&times;</button>
+      <img src="${safePhoto(p)}" alt="New photo ${i+1}">
+      <button class="rm" data-i="${i}" aria-label="Remove photo ${i+1}">&times;</button>
     </div>`).join('');
   holder.querySelectorAll('.rm').forEach(b=>{
     b.addEventListener('click', ()=>{
@@ -1463,7 +1585,13 @@ document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
   const btn = document.getElementById('saveItemBtn');
   btn.disabled = true; btn.textContent = 'Saving…';
 
-  const id = await nextItemId();
+  // A tag that was typed but not confirmed with Enter still counts.
+  const pendingTagText = fTagInput.value.trim().replace(/,$/,'');
+  if(pendingTagText && !pendingTags.includes(pendingTagText)) pendingTags.push(pendingTagText);
+  fTagInput.value = '';
+  renderTagChips();
+
+  let id;
   const chosenLocation = document.getElementById('f-location').value || state.locations[0] || '';
   const publicData = {
     name,
@@ -1489,11 +1617,21 @@ document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
   let ok = true;
   let errMsg = '';
   try{
-    await withAuthRetry(()=> db.collection('items').doc(id).set(publicData));
-    await withAuthRetry(()=> privRef(id).set(privateData));
+    id = await nextItemId();
+    privateData.history[0].text = `Added to inventory at ${chosenLocation || 'unassigned location'}`;
+    const itemRef = db.collection('items').doc(id);
+    // Never overwrite an existing piece if the ID counter was ever reset.
+    const existing = await itemRef.get();
+    if(existing.exists) throw new Error(id + ' already exists — please try again');
+    // Both documents in one atomic write: no half-created pieces.
+    await withAuthRetry(()=>{
+      const batch = db.batch();
+      batch.set(itemRef, publicData);
+      batch.set(privRef(id), privateData);
+      return batch.commit();
+    });
   }catch(e){ console.error('save item failed', e); ok = false; errMsg = e.message || e.code || 'unknown error'; }
-
-  btn.disabled = false; btn.textContent = 'Save piece & generate QR tag';
+  finally{ btn.disabled = false; btn.textContent = 'Save piece & generate QR tag'; }
 
   if(!ok){ toast('Could not save: ' + errMsg); return; }
 
@@ -1512,7 +1650,7 @@ document.getElementById('saveItemBtn').addEventListener('click', async ()=>{
   pendingTags = [];
   renderTagChips();
 
-  await refreshItem(id);
+  try{ await refreshItem(id); }catch(e){ console.error('refresh after save failed', e); }
   toast(id + ' saved to inventory');
   openLabelModal(Object.assign({id}, publicData));
 });
@@ -1522,7 +1660,7 @@ function findItem(id){ return state.items.find(i=>i.id===id); }
 
 function openItemModal(id, viaScan){
   const item = findItem(id);
-  if(!item){ toast('Item not found: '+id); return; }
+  if(!item || (!isStaff && item.deleted)){ toast('Item not found: '+id); return; }
   state.currentItemId = id;
   state.currentItemViaScan = !!viaScan;
   state.itemEditMode = false;
@@ -1530,13 +1668,13 @@ function openItemModal(id, viaScan){
   document.getElementById('modalTitleRow').innerHTML = `
     <span class="serif" style="font-size:19px;font-weight:600;">${esc(item.name)}</span>
     <span class="id-tag">${esc(item.id)}</span>
-    <span class="pill ${item.status}">${esc(item.status)}</span>
+    <span class="pill ${safeStatus(item.status)}">${esc(safeStatus(item.status))}</span>
   `;
 
   const photosHtml = isStaff
     ? renderModalPhotosEditable(item)
     : `<div class="modal-photos">${(item.photos && item.photos.length)
-        ? item.photos.map(p=>`<img src="${p}">`).join('')
+        ? item.photos.map((p,i)=>safePhoto(p) ? `<img src="${safePhoto(p)}" alt="${esc(item.name)} — photo ${i+1} of ${item.photos.length}">` : '').join('')
         : `<div class="none">◆</div>`}</div>`;
 
   const historyHtml = (item.history||[]).slice().reverse().map(h=>`
@@ -1554,6 +1692,17 @@ function openItemModal(id, viaScan){
       ${isStaff && item.status==='available' ? '<button class="btn btn-outline small" id="markReservedBtn">Mark reserved</button>' : ''}
       ${isStaff ? '<button class="btn btn-outline small" id="deleteItemBtn">Move to trash</button>' : ''}
     </div>
+
+    ${isStaff ? `
+    <div class="notes-section" id="notesSection">
+      <h4>Staff notes</h4>
+      <div class="notes-sub">Private — only signed-in staff can see these. Guests never do.</div>
+      <div id="notesList">${renderNotesList(item)}</div>
+      <div class="note-add">
+        <textarea id="noteInput" placeholder="e.g. Please retake photo 2 — too much glare"></textarea>
+        <div><button class="btn btn-brass small" id="noteAddBtn" type="button">Add note</button></div>
+      </div>
+    </div>` : ''}
 
     ${isStaff ? `
     <div class="history">
@@ -1576,9 +1725,90 @@ function openItemModal(id, viaScan){
   if(deleteBtn) deleteBtn.addEventListener('click', ()=>trashItem(item.id));
 
   wireItemDetails(id);
+  if(isStaff) wireNotes(item.id);
   if(isStaff) wireModalPhotos(item.id);
   wirePairSection(item.id);
   wirePhotoLightbox(item);
+}
+
+/* ---------------- Staff notes (private, staff-only) ----------------
+   Stored in the private doc (items/{id}/priv/data) as `comments`, the same
+   place location/history live, so the existing staff-only Firestore rules
+   already keep guests out. Add/remove use arrayUnion/arrayRemove so two
+   staff members posting at once don't overwrite each other. */
+function noteAuthor(email){
+  return (email || 'staff').split('@')[0];
+}
+function renderNotesList(item){
+  const notes = item.comments || [];
+  if(!notes.length) return '<div class="helper-note" style="margin:0 0 8px;">No notes yet.</div>';
+  return notes.map((n,i)=>`
+    <div class="note-item">
+      <div class="note-meta">
+        <span><b>${esc(noteAuthor(n.by))}</b> · ${new Date(n.ts).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'})}</span>
+        <button type="button" data-del-note="${i}" title="Delete note" aria-label="Delete note">&times;</button>
+      </div>
+      <div class="note-text">${esc(n.text)}</div>
+    </div>`).join('');
+}
+// Wired once per modal open. The delete buttons use event delegation on the
+// list, so re-rendering the list never stacks up extra handlers (which would
+// make one tap post the same note several times).
+function wireNotes(id){
+  const addBtn = document.getElementById('noteAddBtn');
+  if(addBtn) addBtn.addEventListener('click', ()=>addNote(id));
+  const list = document.getElementById('notesList');
+  if(list) list.addEventListener('click', (e)=>{
+    const b = e.target.closest('button[data-del-note]');
+    if(b) deleteNote(id, parseInt(b.dataset.delNote,10));
+  });
+}
+// Re-draws the notes list only if this piece's modal is still the one open.
+function redrawNotes(id){
+  const list = document.getElementById('notesList');
+  if(list && state.currentItemId === id && findItem(id)) list.innerHTML = renderNotesList(findItem(id));
+}
+async function addNote(id){
+  if(!requireStaff()) return;
+  const input = document.getElementById('noteInput');
+  const btn = document.getElementById('noteAddBtn');
+  if(!input || !btn || btn.disabled) return;
+  const text = input.value.trim();
+  if(!text){ toast('Write a note first'); return; }
+  btn.disabled = true;
+  const ts = Date.now();
+  const note = { id: ts + '-' + Math.random().toString(36).slice(2,8), ts, by: (currentUser && currentUser.email) || 'staff', text };
+  try{
+    await withAuthRetry(()=> privRef(id).set({
+      comments: firebase.firestore.FieldValue.arrayUnion(note)
+    }, {merge:true}));
+    input.value = '';   // saved — safe to clear, even if the refresh below fails
+    await refreshItem(id);
+    redrawNotes(id);
+    toast('Note added');
+  }catch(e){
+    console.error('add note failed', e);
+    toast('Could not save note: ' + (e.message || e.code || 'unknown error'));
+  }finally{
+    btn.disabled = false;
+  }
+}
+async function deleteNote(id, index){
+  if(!requireStaff()) return;
+  const item = findItem(id);
+  const note = item && item.comments && item.comments[index];
+  if(!note) return;
+  if(!confirm('Delete this note?')) return;
+  await runStaff('delete note', async ()=>{
+    await withAuthRetry(()=> privRef(id).set({
+      comments: firebase.firestore.FieldValue.arrayRemove(note)
+    }, {merge:true}));
+    await refreshItem(id);
+    redrawNotes(id);
+    const stillThere = ((findItem(id) || {}).comments || []).some(n=> n.ts === note.ts && n.text === note.text && n.by === note.by);
+    if(stillThere) toast('That note could not be removed — it may have been edited. Reload and try again.');
+    else toast('Note deleted');
+  });
 }
 
 /* ---------------- Photo management (item modal, staff only) ---------------- */
@@ -1656,9 +1886,9 @@ function wirePhotoLightbox(item){
 function renderModalPhotosEditable(item){
   const thumbs = (item.photos||[]).map((p,i)=>`
     <div class="photo-thumb ${i===0?'is-cover':''}">
-      <img src="${p}">
-      ${i===0 ? '<span class="cover-badge">Cover</span>' : `<button class="cover-btn" type="button" data-cover-i="${i}" title="Set as cover">&#9733;</button>`}
-      <button class="rm" type="button" data-rm-photo="${i}">&times;</button>
+      <img src="${safePhoto(p)}" alt="${esc(item.name)} — photo ${i+1}">
+      ${i===0 ? '<span class="cover-badge">Cover</span>' : `<button class="cover-btn" type="button" data-cover-i="${i}" title="Set as cover" aria-label="Set photo ${i+1} as cover">&#9733;</button>`}
+      <button class="rm" type="button" data-rm-photo="${i}" aria-label="Remove photo ${i+1}">&times;</button>
     </div>`).join('');
   return `
     <div class="photo-thumbs" id="modalPhotoThumbs">
@@ -1666,7 +1896,7 @@ function renderModalPhotosEditable(item){
       <div class="photo-thumb add-photo-tile" id="modalAddPhotoTile" title="Add photos">+</div>
     </div>
     <input type="file" id="modalPhotoInput" accept="image/*" multiple style="display:none;">
-    ${(item.photos && item.photos.length > 1) ? '<div class="helper-note">The first photo (marked "Cover") is what shows on the inventory grid. Click the star on any other photo to make it the cover.</div>' : ''}
+    ${(item.photos && item.photos.length > 1) ? '<div class="helper-note faint-hint">The first photo (marked "Cover") is what shows on the inventory grid. Click the star on any other photo to make it the cover.</div>' : ''}
   `;
 }
 
@@ -1768,7 +1998,7 @@ function wirePairSection(id){
   document.querySelectorAll('#pairSection .pair-chip').forEach(chip=>{
     chip.addEventListener('click', (e)=>{
       if(e.target.closest('button[data-unpair]')) return;
-      openItemModal(chip.dataset.gotoPair, state.currentItemViaScan);
+      openItemById(chip.dataset.gotoPair, state.currentItemViaScan);
     });
   });
   document.querySelectorAll('#pairSection button[data-unpair]').forEach(btn=>{
@@ -1794,36 +2024,63 @@ function wirePairSection(id){
   }
 }
 
-async function pairItems(id, otherId){
+// Runs a staff write and turns any failure into a clear message instead of a
+// silent hang or a generic "unexpected error".
+async function runStaff(label, fn){
+  try{ return await fn(); }
+  catch(e){
+    console.error(label + ' failed', e);
+    toast('Could not ' + label + ': ' + (e.message || e.code || 'unknown error'));
+    return undefined;
+  }
+}
+
+async function pairItems(id, rawOther){
   if(!requireStaff()) return;
-  if(!otherId || otherId === id){ toast('Enter a different item ID'); return; }
-  let other = findItem(otherId);
-  if(!other) other = await fetchItemPublic(otherId);
-  if(!other){ toast('No item found for ' + otherId); return; }
-  await withAuthRetry(()=> db.collection('items').doc(id).update({
-    pairedWith: firebase.firestore.FieldValue.arrayUnion(otherId)
-  }));
-  await withAuthRetry(()=> db.collection('items').doc(otherId).update({
-    pairedWith: firebase.firestore.FieldValue.arrayUnion(id)
-  }));
-  await refreshItem(id);
-  await refreshItem(otherId);
-  toast('Linked to ' + otherId);
-  openItemModal(id, state.currentItemViaScan);
+  const otherId = normalizeId(rawOther);
+  if(!otherId){ toast('Item IDs look like AN-0007'); return; }
+  if(otherId === id){ toast('Enter a different item ID'); return; }
+  await runStaff('link items', async ()=>{
+    const other = findItem(otherId) || await fetchItemPublic(otherId);
+    if(!other){ toast('No item found for ' + otherId); return; }
+    if(other.deleted){ toast(otherId + ' is in the trash'); return; }
+    // Both sides in one atomic write so a set is never one-directional.
+    await withAuthRetry(()=>{
+      const b = db.batch();
+      b.update(db.collection('items').doc(id), { pairedWith: firebase.firestore.FieldValue.arrayUnion(otherId) });
+      b.update(db.collection('items').doc(otherId), { pairedWith: firebase.firestore.FieldValue.arrayUnion(id) });
+      return b.commit();
+    });
+    await refreshItem(id);
+    await refreshItem(otherId);
+    toast('Linked to ' + otherId);
+    openItemModal(id, state.currentItemViaScan);
+  });
 }
 
 async function unpairItems(id, otherId){
   if(!requireStaff()) return;
-  await withAuthRetry(()=> db.collection('items').doc(id).update({
-    pairedWith: firebase.firestore.FieldValue.arrayRemove(otherId)
-  }));
-  await withAuthRetry(()=> db.collection('items').doc(otherId).update({
-    pairedWith: firebase.firestore.FieldValue.arrayRemove(id)
-  }));
-  await refreshItem(id);
-  await refreshItem(otherId);
-  toast('Unlinked from ' + otherId);
-  openItemModal(id, state.currentItemViaScan);
+  await runStaff('unlink items', async ()=>{
+    try{
+      await withAuthRetry(()=>{
+        const b = db.batch();
+        b.update(db.collection('items').doc(id), { pairedWith: firebase.firestore.FieldValue.arrayRemove(otherId) });
+        b.update(db.collection('items').doc(otherId), { pairedWith: firebase.firestore.FieldValue.arrayRemove(id) });
+        return b.commit();
+      });
+    }catch(e){
+      // The partner no longer exists (deleted elsewhere) — just clear our side.
+      if(e && e.code === 'not-found'){
+        await withAuthRetry(()=> db.collection('items').doc(id).update({
+          pairedWith: firebase.firestore.FieldValue.arrayRemove(otherId)
+        }));
+      } else throw e;
+    }
+    await refreshItem(id);
+    if(findItem(otherId)) await refreshItem(otherId);
+    toast('Unlinked from ' + otherId);
+    openItemModal(id, state.currentItemViaScan);
+  });
 }
 
 /* ---------------- Item details: unified view + edit ---------------- */
@@ -1864,9 +2121,13 @@ function renderItemDetailsView(item){
 let editTagsBuffer = [];
 
 function renderItemDetailsEdit(item){
-  const locOptions = state.locations.length
-    ? state.locations.map(l=>`<option value="${esc(l)}" ${l===item.location?'selected':''}>${esc(l)}</option>`).join('')
-    : `<option value="" disabled selected>No locations yet</option>`;
+  // Always offer the item's CURRENT location (even if it was since removed
+  // from the list) and an "Unassigned" choice, so just opening this form and
+  // saving can never silently move the piece to the first location.
+  const editLocs = state.locations.slice();
+  if(item.location && !editLocs.includes(item.location)) editLocs.push(item.location);
+  const locOptions = (item.location ? '' : `<option value="" selected>Unassigned</option>`)
+    + editLocs.map(l=>`<option value="${esc(l)}" ${l===item.location?'selected':''}>${esc(l)}</option>`).join('');
   return `
     <div class="field">
       <label>Name</label>
@@ -1888,8 +2149,7 @@ function renderItemDetailsEdit(item){
     </div>
     <div class="field">
       <label>Location</label>
-      <select id="edit-location" ${state.locations.length ? '' : 'disabled'}>${locOptions}</select>
-      ${state.locations.length ? '' : '<div class="helper-note">No locations set up yet — add one in the Locations tab.</div>'}
+      <select id="edit-location">${locOptions}</select>
     </div>
     <div class="field-row">
       <div class="field"><label>Materials</label><input type="text" id="edit-materials" value="${esc(item.materials||'')}"></div>
@@ -1966,6 +2226,11 @@ async function saveItemDetails(id){
   const btn = document.getElementById('saveItemEditBtn');
   btn.disabled = true; btn.textContent = 'Saving…';
 
+  // A tag typed but not confirmed with Enter still counts.
+  const tagInputEl = document.getElementById('editTagInput');
+  const typedTag = tagInputEl ? tagInputEl.value.trim().replace(/,$/,'') : '';
+  if(typedTag && !editTagsBuffer.includes(typedTag)) editTagsBuffer.push(typedTag);
+
   const updates = {
     name,
     category: document.getElementById('edit-category').value.trim(),
@@ -1978,18 +2243,28 @@ async function saveItemDetails(id){
     provenance: document.getElementById('edit-provenance').value.trim(),
     condition: document.getElementById('edit-condition').value.trim()
   };
-  await withAuthRetry(()=> db.collection('items').doc(id).update(updates));
-
   const locSelect = document.getElementById('edit-location');
-  const newLoc = locSelect && !locSelect.disabled ? locSelect.value : item.location;
-  if(newLoc && newLoc !== item.location){
-    await withAuthRetry(()=> privRef(id).set({
-      location: newLoc,
-      history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: `Moved from ${item.location||'unassigned'} to ${newLoc}`})
-    }, {merge:true}));
-  }
+  const newLoc = locSelect ? locSelect.value : item.location;
+  const moved = !!newLoc && newLoc !== item.location;
 
-  await refreshItem(id);
+  const saved = await runStaff('save changes', async ()=>{
+    await withAuthRetry(()=>{
+      const b = db.batch();
+      b.update(db.collection('items').doc(id), updates);
+      if(moved){
+        b.set(privRef(id), {
+          location: newLoc,
+          history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: `Moved from ${item.location||'unassigned'} to ${newLoc}`})
+        }, {merge:true});
+      }
+      return b.commit();
+    });
+    await refreshItem(id);
+    return true;
+  });
+
+  btn.disabled = false; btn.textContent = 'Save all changes';
+  if(!saved) return;   // keep the form open so nothing typed is lost
   state.itemEditMode = false;
   toast('Details saved');
   openItemModal(id, state.currentItemViaScan);
@@ -2006,28 +2281,35 @@ async function updateStatus(id, status){
   if(!requireStaff()) return;
   const item = findItem(id);
   if(!item) return;
-  await withAuthRetry(()=> db.collection('items').doc(id).update({status}));
-  await withAuthRetry(()=> privRef(id).set({
-    history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: 'Marked as ' + status})
-  }, {merge:true}));
-
-  const paired = item.pairedWith || [];
+  // Ask about the rest of the set BEFORE writing anything, then write each
+  // piece (status + history together). One missing/failed partner can no
+  // longer abort the others or leave this screen out of date.
+  const paired = (item.pairedWith || []).filter(pid=>{ const p = findItem(pid); return !(p && p.deleted); });
+  let targets = [];
   if(paired.length){
     const names = paired.join(', ');
-    const applyAll = confirm(`${item.id} is part of a set with ${names}. Mark ${paired.length>1?'those pieces':'that piece'} as ${status} too?`);
-    if(applyAll){
-      for(const pid of paired){
-        await withAuthRetry(()=> db.collection('items').doc(pid).update({status}));
-        await withAuthRetry(()=> privRef(pid).set({
-          history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: `Marked as ${status} (set with ${item.id})`})
-        }, {merge:true}));
-        await refreshItem(pid);
-      }
+    if(confirm(`${item.id} is part of a set with ${names}. Mark ${paired.length>1?'those pieces':'that piece'} as ${status} too?`)){
+      targets = paired;
     }
   }
-
-  await refreshItem(id);
-  toast(item.id + ' marked ' + status);
+  const writeStatus = (pid, text)=> withAuthRetry(()=>{
+    const b = db.batch();
+    b.update(db.collection('items').doc(pid), {status});
+    b.set(privRef(pid), { history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text}) }, {merge:true});
+    return b.commit();
+  });
+  const failed = [];
+  await runStaff('update status', async ()=>{
+    await writeStatus(id, 'Marked as ' + status);
+    for(const pid of targets){
+      try{
+        await writeStatus(pid, `Marked as ${status} (set with ${item.id})`);
+        await refreshItem(pid);
+      }catch(e){ console.error('partner status failed', pid, e); failed.push(pid); }
+    }
+  });
+  try{ await refreshItem(id); }catch(e){ console.error('refresh failed', e); }
+  toast(failed.length ? `${item.id} marked ${status}, but could not update ${failed.join(', ')}` : item.id + ' marked ' + status);
   openItemModal(id, state.currentItemViaScan);
 }
 
@@ -2038,41 +2320,65 @@ async function updateStatus(id, status){
 async function trashItem(id){
   if(!requireStaff()) return;
   if(!confirm('Move this item to trash? You can restore it later from the Trash tab.')) return;
-  await withAuthRetry(()=> db.collection('items').doc(id).update({deleted:true, deletedAt: Date.now()}));
-  try{
-    await withAuthRetry(()=> privRef(id).set({
-      history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: 'Moved to trash'})
-    }, {merge:true}));
-  }catch(e){ /* non-fatal — history is best-effort */ }
-  document.getElementById('itemOverlay').classList.remove('active');
-  await refreshItem(id);
-  toast('Item moved to trash');
+  const done = await runStaff('move to trash', async ()=>{
+    // flag + history entry together
+    await withAuthRetry(()=>{
+      const b = db.batch();
+      b.update(db.collection('items').doc(id), {deleted:true, deletedAt: Date.now()});
+      b.set(privRef(id), { history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: 'Moved to trash'}) }, {merge:true});
+      return b.commit();
+    });
+    document.getElementById('itemOverlay').classList.remove('active');
+    await refreshItem(id);
+    return true;
+  });
+  if(done) toast('Item moved to trash');
 }
 
 async function restoreItem(id){
   if(!requireStaff()) return;
-  await withAuthRetry(()=> db.collection('items').doc(id).update({deleted:false}));
-  try{
-    await withAuthRetry(()=> privRef(id).set({
-      history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: 'Restored from trash'})
-    }, {merge:true}));
-  }catch(e){ /* non-fatal */ }
-  await refreshItem(id);
-  renderTrash();
-  toast('Item restored');
+  const done = await runStaff('restore item', async ()=>{
+    await withAuthRetry(()=>{
+      const b = db.batch();
+      b.update(db.collection('items').doc(id), {deleted:false});
+      b.set(privRef(id), { history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: 'Restored from trash'}) }, {merge:true});
+      return b.commit();
+    });
+    await refreshItem(id);
+    renderTrash();
+    return true;
+  });
+  if(done) toast('Item restored');
 }
 
 async function hardDeleteItem(id){
   if(!requireStaff()) return;
   if(!confirm('Permanently delete this item? This cannot be undone.')) return;
-  try{
-    await withAuthRetry(()=> privRef(id).delete());
-  }catch(e){ /* private doc may not be readable/exist in edge cases — ignore */ }
-  await withAuthRetry(()=> db.collection('items').doc(id).delete());
-  document.getElementById('itemOverlay').classList.remove('active');
-  removeItemFromState(id);
-  renderTrash();
-  toast('Item permanently deleted');
+  const done = await runStaff('delete item', async ()=>{
+    // Remove this piece from any set it belonged to first, so no other item
+    // is left pointing at something that no longer exists.
+    const item = findItem(id);
+    for(const pid of ((item && item.pairedWith) || [])){
+      try{
+        await withAuthRetry(()=> db.collection('items').doc(pid).update({
+          pairedWith: firebase.firestore.FieldValue.arrayRemove(id)
+        }));
+        if(findItem(pid)) await refreshItem(pid);
+      }catch(e){ console.error('could not unlink partner', pid, e); }
+    }
+    // The private record and the item go together.
+    await withAuthRetry(()=>{
+      const b = db.batch();
+      b.delete(privRef(id));
+      b.delete(db.collection('items').doc(id));
+      return b.commit();
+    });
+    document.getElementById('itemOverlay').classList.remove('active');
+    removeItemFromState(id);
+    renderTrash();
+    return true;
+  });
+  if(done) toast('Item permanently deleted');
 }
 
 /* ---------------- Trash tab ---------------- */
@@ -2115,7 +2421,10 @@ async function renderTrash(){
 
 /* ---------------- CSV export ---------------- */
 function csvCell(v){
-  const s = String(v==null ? '' : v);
+  let s = String(v==null ? '' : v);
+  // A cell starting with = + - @ (or tab/CR) would run as a formula when the
+  // file is opened in Excel/Sheets — prefix it so it's treated as plain text.
+  if(/^[=+\-@\t\r]/.test(s)) s = "'" + s;
   return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
 }
 
@@ -2123,6 +2432,7 @@ async function exportInventoryCsv(){
   if(!requireStaff()) return;
   toast('Preparing CSV…');
   await loadAllRemaining();
+  if(state.pagination.hasMore){ toast('Could not load every item — the CSV would be incomplete. Try again.'); return; }
   const cols = ['ID','Name','Category','Price','Status','Location','Tags','Materials','Period / Style','Dimensions','Provenance / Maker','Condition','Description','Created'];
   const rows = [cols];
   activeItems().forEach(it=>{
@@ -2144,15 +2454,30 @@ async function exportInventoryCsv(){
     ]);
   });
   const csv = rows.map(r=>r.map(csvCell).join(',')).join('\r\n');
+  const fileName = 'nm-inventory-' + new Date().toISOString().slice(0,10) + '.csv';
   const blob = new Blob(['﻿' + csv], {type:'text/csv;charset=utf-8;'});
+
+  // On an installed iPhone app a plain download link can navigate away from
+  // the app; the share sheet (Save to Files, Mail, ...) is the reliable route.
+  try{
+    const file = new File([blob], fileName, {type:'text/csv'});
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      await navigator.share({files:[file], title:'Inventory export'});
+      toast('CSV ready');
+      return;
+    }
+  }catch(e){
+    if(e && e.name === 'AbortError') return;   // user closed the share sheet
+    console.error('share failed, falling back to download', e);
+  }
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = 'nm-inventory-' + new Date().toISOString().slice(0,10) + '.csv';
+  a.download = fileName;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
-  setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  setTimeout(()=>URL.revokeObjectURL(url), 60000);
   toast('CSV downloaded');
 }
 document.getElementById('exportCsvBtn').addEventListener('click', exportInventoryCsv);
@@ -2210,21 +2535,31 @@ async function printBulkLabels(items, layout){
   temp.style.position = 'fixed';
   temp.style.left = '-9999px';
   document.body.appendChild(temp);
-  const holders = items.map(it=>{
-    const d = document.createElement('div');
-    temp.appendChild(d);
-    new QRCode(d, {text:'PROVQR:'+it.id, width:200, height:200, colorDark:'#2A2622', colorLight:'#ffffff'});
-    return d;
-  });
+  let labels;
+  try{
+    const holders = items.map(it=>{
+      const d = document.createElement('div');
+      temp.appendChild(d);
+      new QRCode(d, {text:'PROVQR:'+it.id, width:200, height:200, colorDark:'#2A2622', colorLight:'#ffffff'});
+      return d;
+    });
 
-  await new Promise(res=>setTimeout(res, 200));
+    await new Promise(res=>setTimeout(res, 200));
 
-  const labels = holders.map((d,i)=>{
-    const img = d.querySelector('img') || d.querySelector('canvas');
-    const src = img ? (img.tagName==='IMG' ? img.src : img.toDataURL()) : '';
-    return { item: items[i], src };
-  });
-  document.body.removeChild(temp);
+    labels = holders.map((d,i)=>{
+      const canvas = d.querySelector('canvas');
+      const img = d.querySelector('img');
+      const src = canvas ? canvas.toDataURL() : (img ? img.src : '');
+      return { item: items[i], src };
+    });
+  }catch(e){
+    console.error('QR generation failed', e);
+    toast('Could not prepare the labels: ' + (e.message || 'unknown error'));
+    return;
+  }finally{
+    // always remove the off-screen holder, even if QR generation failed
+    if(temp.parentNode) temp.parentNode.removeChild(temp);
+  }
 
   const area = document.getElementById('printArea');
   const oldPageStyle = document.getElementById('dynamicPageStyle');
@@ -2248,7 +2583,16 @@ async function printBulkLabels(items, layout){
     area.innerHTML = labels.map(l=>`<div class="print-page">${labelMarkup(l)}</div>`).join('');
   }
 
+  // Make sure every QR image has decoded before the print dialog opens,
+  // otherwise labels can come out blank on slower phones.
+  await Promise.all(Array.from(area.querySelectorAll('img')).map(im=>
+    (im.decode ? im.decode() : Promise.resolve()).catch(()=>{})
+  ));
+
   document.body.classList.add('printing-label');
+  // iOS (especially the home-screen app) doesn't reliably fire "afterprint".
+  // Without a fallback the app would stay hidden behind the print layout.
+  setTimeout(endPrintMode, 60000);
   window.print();
 }
 
@@ -2256,11 +2600,24 @@ function printLabel(item){
   printBulkLabels([item], 'single');
 }
 
-window.addEventListener('afterprint', ()=>{
+function endPrintMode(){
   document.body.classList.remove('printing-label');
   const s = document.getElementById('dynamicPageStyle');
   if(s) s.remove();
+  const area = document.getElementById('printArea');
+  if(area) area.innerHTML = '';
+}
+window.addEventListener('afterprint', endPrintMode);
+// Back in the app after the print sheet closed (covers iOS not firing afterprint).
+document.addEventListener('visibilitychange', ()=>{
+  if(!document.hidden && document.body.classList.contains('printing-label')) setTimeout(endPrintMode, 500);
 });
+if(window.matchMedia){
+  const mql = window.matchMedia('print');
+  const onPrintChange = (e)=>{ if(!e.matches) endPrintMode(); };
+  if(mql.addEventListener) mql.addEventListener('change', onPrintChange);
+  else if(mql.addListener) mql.addListener(onPrintChange);
+}
 
 /* ---------------- Locations ---------------- */
 function renderLocations(){
@@ -2276,39 +2633,66 @@ function renderLocations(){
       ${isStaff ? `<button class="btn btn-outline small" data-loc="${esc(l)}">Remove</button>` : ''}
     </div>`).join('');
   holder.querySelectorAll('button[data-loc]').forEach(b=>{
-    b.addEventListener('click', ()=>removeLocation(b.dataset.loc, counts[b.dataset.loc]||0));
+    b.addEventListener('click', ()=>removeLocation(b.dataset.loc));
   });
 }
 
-async function removeLocation(loc, count){
+// Reads the CURRENT saved list, applies the change, and writes it back in one
+// transaction — so two staff editing locations at once can't overwrite each
+// other, and the screen only changes after the save really succeeded.
+async function updateLocations(mutate){
+  const ref = keyToRef('locations');
+  return withAuthRetry(()=> db.runTransaction(async (tx)=>{
+    const snap = await tx.get(ref);
+    let list = DEFAULT_LOCATIONS.slice();
+    if(snap.exists){
+      list = JSON.parse(snap.data().value);
+      if(!Array.isArray(list)) throw new Error('Saved locations look damaged');
+    }
+    const next = mutate(list.slice());
+    tx.set(ref, {value: JSON.stringify(next)});
+    return next;
+  }));
+}
+
+async function removeLocation(loc){
   if(!requireStaff()) return;
-  if(count>0){ toast(`Move the ${count} item(s) out of ${loc} before removing it`); return; }
-  state.locations = state.locations.filter(l=>l!==loc);
-  await sSetWithRetry('locations', JSON.stringify(state.locations), true);
-  renderLocations();
-  populateLocationSelects();
-  toast(loc + ' removed');
+  if(state.locationsLoadFailed){ toast('Locations did not load — reload the page before editing them'); return; }
+  await runStaff('remove location', async ()=>{
+    // The count shown on screen only covers pieces loaded so far. Check every
+    // piece — trashed ones too, since restoring one would put it back.
+    await loadAllRemaining();
+    if(state.pagination.hasMore){ toast('Could not check every item — try again'); return; }
+    const using = state.items.filter(it=>it.location === loc).length;
+    if(using > 0){ toast(`Move the ${using} item(s) (including any in Trash) out of ${loc} before removing it`); return; }
+    state.locations = await updateLocations(list=>list.filter(l=>l!==loc));
+    renderLocations();
+    populateLocationSelects();
+    toast(loc + ' removed');
+  });
 }
 
 document.getElementById('addLocBtn').addEventListener('click', async ()=>{
   if(!requireStaff()) return;
+  if(state.locationsLoadFailed){ toast('Locations did not load — reload the page before editing them'); return; }
   const input = document.getElementById('newLocInput');
   const val = input.value.trim();
   if(!val) return;
   if(state.locations.includes(val)){ toast('That location already exists'); return; }
-  state.locations.push(val);
-  await sSetWithRetry('locations', JSON.stringify(state.locations), true);
-  input.value='';
-  renderLocations();
-  populateLocationSelects();
-  toast(val + ' added');
+  await runStaff('add location', async ()=>{
+    state.locations = await updateLocations(list=> list.includes(val) ? list : list.concat(val));
+    input.value='';
+    renderLocations();
+    populateLocationSelects();
+    toast(val + ' added');
+  });
 });
 
 /* ---------------- Camera / scanning ---------------- */
 const video = document.getElementById('scanVideo');
 const scanStatus = document.getElementById('scanStatus');
 let scanCanvas = document.createElement('canvas');
-let scanCtx = scanCanvas.getContext('2d');
+let scanCtx = scanCanvas.getContext('2d', {willReadFrequently:true});
 let rafId = null;
 
 let jsQRLoadPromise = null;
@@ -2319,52 +2703,94 @@ function ensureJsQRLoaded(){
     const s = document.createElement('script');
     s.src = 'https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.js';
     s.onload = resolve;
-    s.onerror = reject;
+    s.onerror = ()=>{
+      // allow a later retry instead of caching the failure forever
+      jsQRLoadPromise = null;
+      s.remove();
+      reject(new Error('jsQR failed to load'));
+    };
     document.head.appendChild(s);
   });
   return jsQRLoadPromise;
 }
 
+// Each start gets a token; stopCamera() bumps it, so a start that is still
+// waiting on the permission prompt can't switch the camera on after the
+// user already left the Scan tab.
+let camToken = 0;
 async function startCamera(){
-  if(state.cameraStream) return;
+  if(state.cameraStream || state.cameraStarting) return;
+  state.cameraStarting = true;
+  const token = ++camToken;
   scanStatus.textContent = 'Requesting camera access…';
   try{
     await ensureJsQRLoaded();
     const stream = await navigator.mediaDevices.getUserMedia({video:{facingMode:'environment'}});
+    if(token !== camToken || state.activeTab !== 'scan'){
+      stream.getTracks().forEach(t=>t.stop());
+      return;
+    }
     state.cameraStream = stream;
+    // iOS ends the tracks when the app is backgrounded; reset so the next
+    // visit restarts the camera instead of showing a frozen black box.
+    stream.getVideoTracks().forEach(t=>{ t.onended = ()=>{ if(state.cameraStream === stream) stopCamera(); }; });
     video.srcObject = stream;
     await video.play();
+    if(token !== camToken) return;
     state.scanning = true;
     scanStatus.textContent = 'Point camera at a QR tag';
     document.getElementById('toggleCamBtn').textContent = 'Stop camera';
     tickScan();
   }catch(e){
-    scanStatus.textContent = 'Camera unavailable — use the manual field below';
+    console.error('camera start failed', e);
+    if(token === camToken){
+      scanStatus.textContent = (e && e.name === 'NotAllowedError')
+        ? 'Camera permission denied — allow it in Settings, or use the manual field below'
+        : 'Camera unavailable — use the manual field below';
+    }
+  }finally{
+    if(token === camToken) state.cameraStarting = false;
   }
 }
 
 function stopCamera(){
+  camToken++;
+  state.cameraStarting = false;
   state.scanning = false;
-  if(rafId) cancelAnimationFrame(rafId);
+  if(rafId){ cancelAnimationFrame(rafId); rafId = null; }
   if(state.cameraStream){
     state.cameraStream.getTracks().forEach(t=>t.stop());
     state.cameraStream = null;
   }
+  video.srcObject = null;
   document.getElementById('toggleCamBtn').textContent = 'Start camera';
 }
+
+document.addEventListener('visibilitychange', ()=>{
+  if(document.hidden) stopCamera();
+  else if(state.activeTab === 'scan') startCamera();
+});
 
 document.getElementById('toggleCamBtn').addEventListener('click', ()=>{
   if(state.cameraStream) stopCamera(); else startCamera();
 });
 
+// Decode a downscaled frame ~10 times a second rather than a full-resolution
+// frame on every animation frame — plenty to read a QR tag, far gentler on
+// the phone's battery and CPU.
+let lastTickAt = 0;
 function tickScan(){
   if(!state.scanning) return;
-  if(video.readyState === video.HAVE_ENOUGH_DATA){
-    scanCanvas.width = video.videoWidth;
-    scanCanvas.height = video.videoHeight;
-    scanCtx.drawImage(video, 0, 0, scanCanvas.width, scanCanvas.height);
-    const imageData = scanCtx.getImageData(0,0,scanCanvas.width,scanCanvas.height);
-    const code = jsQR(imageData.data, imageData.width, imageData.height);
+  const now = performance.now();
+  if(now - lastTickAt >= 100 && video.readyState === video.HAVE_ENOUGH_DATA && video.videoWidth){
+    lastTickAt = now;
+    const vw = video.videoWidth, vh = video.videoHeight;
+    const scale = Math.min(1, 800 / Math.max(vw, vh));
+    const w = Math.round(vw * scale), h = Math.round(vh * scale);
+    if(scanCanvas.width !== w || scanCanvas.height !== h){ scanCanvas.width = w; scanCanvas.height = h; }
+    scanCtx.drawImage(video, 0, 0, w, h);
+    const imageData = scanCtx.getImageData(0, 0, w, h);
+    const code = jsQR(imageData.data, w, h, {inversionAttempts:'dontInvert'});
     if(code && code.data){
       handleScanResult(code.data);
       return;
@@ -2373,29 +2799,97 @@ function tickScan(){
   rafId = requestAnimationFrame(tickScan);
 }
 
-function handleScanResult(data){
-  let id = data;
-  if(data.startsWith('PROVQR:')) id = data.slice(7);
-  scanStatus.textContent = 'Found: ' + id;
-  const item = findItem(id);
-  if(item){
-    stopCamera();
-    openItemModal(id, true);
-  } else {
-    toast('No item found for ' + id);
-    rafId = requestAnimationFrame(tickScan);
+// Accepts a scanned/typed value (plain ID or the PROVQR: payload on tags
+// already printed) and returns a validated item ID, or null. Validating
+// keeps stray text — including a '/' — from ever reaching a Firestore path.
+function normalizeId(raw){
+  let v = String(raw == null ? '' : raw).trim();
+  if(v.toUpperCase().startsWith('PROVQR:')) v = v.slice(7).trim();
+  v = v.toUpperCase();
+  return /^AN-\d{4,}$/.test(v) ? v : null;
+}
+
+// Opens an item by ID even when it isn't on a page that has been loaded yet
+// (an old piece, or a set partner): falls back to fetching that one item.
+// Guests are never shown a trashed piece. Returns true if a modal opened.
+async function openItemById(id, viaScan){
+  let item = findItem(id);
+  if(!item){
+    try{ await refreshItem(id); }catch(e){ console.error('lookup failed', id, e); toast('Could not look that up — check your connection'); return false; }
+    item = findItem(id);
   }
+  if(!item || (!isStaff && item.deleted)){ toast('No item found for ' + id); return false; }
+  openItemModal(id, viaScan);
+  return true;
+}
+
+// The same QR stays in view for a while; ignore repeats for a moment so a
+// bad or unknown tag doesn't fire a toast on every frame.
+let lastScanRaw = '', lastScanAt = 0;
+async function handleScanResult(data){
+  const now = Date.now();
+  if(data === lastScanRaw && now - lastScanAt < 2500){
+    rafId = requestAnimationFrame(tickScan);
+    return;
+  }
+  lastScanRaw = data; lastScanAt = now;
+  const id = normalizeId(data);
+  if(!id){
+    toast("That QR code isn't one of our tags");
+    rafId = requestAnimationFrame(tickScan);
+    return;
+  }
+  scanStatus.textContent = 'Found: ' + id;
+  const ok = await openItemById(id, true);
+  if(ok) stopCamera();
+  else if(state.scanning) rafId = requestAnimationFrame(tickScan);
 }
 
 document.getElementById('manualLookupBtn').addEventListener('click', doManualLookup);
 document.getElementById('manualId').addEventListener('keydown', e=>{ if(e.key==='Enter') doManualLookup(); });
-function doManualLookup(){
-  const val = document.getElementById('manualId').value.trim().toUpperCase();
-  if(!val) return;
-  const item = findItem(val);
-  if(item){ openItemModal(val, true); document.getElementById('manualId').value=''; }
-  else toast('No item found for ' + val);
+async function doManualLookup(){
+  const raw = document.getElementById('manualId').value;
+  if(!raw.trim()) return;
+  const id = normalizeId(raw);
+  if(!id){ toast('Item IDs look like AN-0007'); return; }
+  if(await openItemById(id, true)) document.getElementById('manualId').value = '';
 }
+
+/* ---------------- Dialog accessibility ---------------- */
+document.querySelectorAll('.overlay > .modal').forEach(m=>{
+  m.setAttribute('role','dialog');
+  m.setAttribute('aria-modal','true');
+});
+document.getElementById('photoLightbox').setAttribute('role','dialog');
+document.getElementById('photoLightbox').setAttribute('aria-label','Photo viewer');
+document.querySelectorAll('.modal-close').forEach(b=>b.setAttribute('aria-label','Close'));
+document.getElementById('clearTagFilterBtn').setAttribute('aria-label','Clear tag filter');
+document.getElementById('lightboxPrev').setAttribute('aria-label','Previous photo');
+document.getElementById('lightboxNext').setAttribute('aria-label','Next photo');
+document.getElementById('toast').setAttribute('role','status');
+document.getElementById('toast').setAttribute('aria-live','polite');
+document.getElementById('scanStatus').setAttribute('aria-live','polite');
+document.getElementById('searchInput').setAttribute('aria-label','Search pieces');
+document.getElementById('filterLocation').setAttribute('aria-label','Filter by location');
+document.getElementById('filterStatus').setAttribute('aria-label','Filter by status');
+document.getElementById('filterTag').setAttribute('aria-label','Filter by tag');
+document.getElementById('manualId').setAttribute('aria-label','Item ID');
+document.getElementById('manualId').setAttribute('autocapitalize','characters');
+document.getElementById('manualId').setAttribute('autocorrect','off');
+document.getElementById('authEmail').setAttribute('type','email');
+document.getElementById('authEmail').setAttribute('autocomplete','username');
+document.getElementById('authEmail').setAttribute('autocapitalize','none');
+document.getElementById('authEmail').setAttribute('autocorrect','off');
+document.getElementById('authPassword').setAttribute('autocomplete','current-password');
+document.getElementById('f-price').setAttribute('inputmode','decimal');
+// Escape closes the top-most open dialog
+document.addEventListener('keydown', e=>{
+  if(e.key !== 'Escape') return;
+  const open = Array.from(document.querySelectorAll('.overlay.active')).pop();
+  if(!open) return;
+  if(open.id === 'photoLightbox') closePhotoLightbox();
+  else open.classList.remove('active');
+});
 
 /* ---------------- Init ---------------- */
 async function init(){
