@@ -153,12 +153,12 @@
   }
   .card:hover{transform:translateY(-2px);box-shadow:0 6px 20px rgba(42,38,34,0.12);}
   .card-photo{
-    height:150px;background:#fff;position:relative;
+    height:150px;background:var(--surface-2);position:relative;
     display:flex;align-items:center;justify-content:center;
     border-bottom:1px solid var(--line);
     overflow:hidden;
   }
-  .card-photo img{width:100%;height:100%;object-fit:contain;background:#fff;}
+  .card-photo img{width:100%;height:100%;object-fit:contain;background:var(--surface-2);}
   .card-photo .placeholder{color:var(--line-strong);font-size:34px;}
   .tag-corner{
     position:absolute;top:0;right:0;
@@ -245,8 +245,8 @@
   }
   .photo-drop:hover{border-color:var(--brass);}
   .photo-thumbs{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;}
-  .photo-thumb{position:relative;width:70px;height:70px;border-radius:6px;overflow:hidden;border:1px solid var(--line);background:#fff;}
-  .photo-thumb img{width:100%;height:100%;object-fit:contain;cursor:zoom-in;}
+  .photo-thumb{position:relative;width:70px;height:70px;border-radius:6px;overflow:hidden;border:1px solid var(--line);}
+  .photo-thumb img{width:100%;height:100%;object-fit:cover;cursor:zoom-in;}
   .photo-thumb.is-cover{outline:2px solid var(--brass);outline-offset:1px;}
   .photo-thumb .rm{
     position:absolute;top:2px;right:2px;background:rgba(42,38,34,0.75);color:#fff;
@@ -331,9 +331,9 @@
   .modal-close{background:none;border:none;font-size:22px;color:var(--ink-soft);cursor:pointer;line-height:1;padding:4px;}
   .modal-body{padding:6px 24px 26px;}
   .modal-photos{display:flex;gap:8px;overflow-x:auto;margin:14px 0;padding-bottom:4px;}
-  .modal-photos img{height:160px;border-radius:8px;object-fit:contain;background:#fff;border:1px solid var(--line);flex-shrink:0;}
+  .modal-photos img{height:160px;border-radius:8px;object-fit:cover;flex-shrink:0;}
   .modal-photos .none{
-    height:160px;width:100%;border-radius:8px;background:#fff;border:1px dashed var(--line-strong);
+    height:160px;width:100%;border-radius:8px;background:var(--surface);border:1px dashed var(--line-strong);
     display:flex;align-items:center;justify-content:center;color:var(--line-strong);font-size:40px;
   }
   .id-tag{
@@ -453,6 +453,7 @@
       <button data-tab="add">Add Item</button>
       <button data-tab="scan">Scan</button>
       <button data-tab="locations">Locations</button>
+      <button data-tab="trash" id="trashTabBtn" style="display:none;">Trash</button>
     </nav>
     <div class="auth-area">
       <div class="auth-status guest" id="authStatus"><span class="dot"></span><span id="authStatusText">Guest</span></div>
@@ -476,6 +477,7 @@
       </select>
       <select id="filterTag" style="display:none;"><option value="">All tags</option></select>
       <button class="btn btn-outline small" id="selectModeBtn" style="display:none;">Select items</button>
+      <button class="btn btn-outline small" id="exportCsvBtn" style="display:none;">Export CSV</button>
     </div>
     <div class="active-tag-filter" id="activeTagFilter" style="display:none;">
       Tag: <span id="activeTagFilterName"></span>
@@ -606,6 +608,20 @@
       <div class="add-loc-row" id="addLocRow">
         <input type="text" id="newLocInput" placeholder="New location name">
         <button class="btn btn-brass" id="addLocBtn">Add location</button>
+      </div>
+    </div>
+  </section>
+
+  <!-- TRASH -->
+  <section class="view" id="view-trash">
+    <div class="panel">
+      <div class="panel-title">Trash</div>
+      <div class="helper-note" style="margin-bottom:14px;">Items moved to trash are hidden from the inventory but kept here until you permanently delete them.</div>
+      <div id="loadingTrash" class="loading-msg" style="display:none;">Loading trash…</div>
+      <div id="trashList"></div>
+      <div class="empty-state" id="trashEmptyState" style="display:none;">
+        <div class="serif">Trash is empty</div>
+        <div>Items you move to trash will show up here.</div>
       </div>
     </div>
   </section>
@@ -893,6 +909,9 @@ function applyAuthGating(){
   document.getElementById('filterLocation').style.display = isStaff ? '' : 'none';
   if(!isStaff && state.selectMode){ exitSelectMode(); }
   document.getElementById('selectModeBtn').style.display = (isStaff && !state.selectMode) ? '' : 'none';
+  document.getElementById('exportCsvBtn').style.display = isStaff ? '' : 'none';
+  document.getElementById('trashTabBtn').style.display = isStaff ? '' : 'none';
+  if(!isStaff && state.activeTab === 'trash'){ switchTab('inventory'); }
   renderLocations();
   renderGrid();
   if(state.currentItemId && document.getElementById('itemOverlay').classList.contains('active')){
@@ -931,6 +950,7 @@ function switchTab(tab){
   document.getElementById('view-'+tab).classList.add('active');
   if(tab==='scan') startCamera(); else stopCamera();
   if(tab==='locations') renderLocations();
+  if(tab==='trash') renderTrash();
 }
 
 /* ---------------- ID generation ---------------- */
@@ -1046,14 +1066,22 @@ function removeItemFromState(id){
   populateLocationSelects();
 }
 
+// Items that are not in the trash — the set used for counts, filters, and
+// the inventory grid. Items don't have a `deleted` field until they're
+// trashed for the first time, so "not true" (not just "false") is what
+// keeps every pre-existing item showing up normally.
+function activeItems(){
+  return state.items.filter(it=>!it.deleted);
+}
+
 function updateHeaderCount(){
-  const n = state.items.length;
+  const n = activeItems().length;
   document.getElementById('headerCount').textContent = n + (n===1?' item':' items');
 }
 
 function allLocationsInUse(){
   const set = new Set();
-  state.items.forEach(it=>{ if(it.location) set.add(it.location); });
+  activeItems().forEach(it=>{ if(it.location) set.add(it.location); });
   return Array.from(set).sort((a,b)=>a.localeCompare(b));
 }
 
@@ -1076,7 +1104,7 @@ function populateLocationSelects(){
 
 function allTags(){
   const set = new Set();
-  state.items.forEach(it=>(it.tags||[]).forEach(t=>set.add(t)));
+  activeItems().forEach(it=>(it.tags||[]).forEach(t=>set.add(t)));
   return Array.from(set).sort((a,b)=>a.localeCompare(b));
 }
 
@@ -1111,7 +1139,7 @@ function getFilteredItems(){
   const statF = document.getElementById('filterStatus').value;
   const tagF = document.getElementById('filterTag').value;
 
-  return state.items.filter(it=>{
+  return activeItems().filter(it=>{
     if(isStaff && locF && it.location !== locF) return false;
     if(statF && it.status !== statF) return false;
     if(tagF && !(it.tags||[]).includes(tagF)) return false;
@@ -1339,34 +1367,77 @@ photoDrop.addEventListener('drop', e=>{
   handleFiles(e.dataTransfer.files);
 });
 
-function handleFiles(fileList){
-  Array.from(fileList).slice(0,6).forEach(file=>{
-    if(!file.type.startsWith('image/')) return;
-    compressImage(file, dataUrl=>{
-      pendingPhotos.push(dataUrl);
-      renderThumbs();
-    });
+// Photos are stored inside the item's Firestore document, which has a hard
+// 1 MiB limit. PHOTO_BUDGET is the total size (in characters of base64 text)
+// all of one item's photos may use, leaving headroom for the other fields.
+const PHOTO_BUDGET = 900000;
+// Tried in order: the sharpest setting that still fits wins. 1400px on the
+// long edge is ~3.5x an iPhone's screen width in points, so it stays crisp
+// on retina screens and when zoomed in the lightbox.
+const PHOTO_STEPS = [
+  {edge:1400, q:0.84},
+  {edge:1280, q:0.78},
+  {edge:1100, q:0.72},
+  {edge:900,  q:0.68}
+];
+function photosSize(arr){ return (arr||[]).reduce((n,p)=>n+p.length, 0); }
+
+async function handleFiles(fileList){
+  const files = Array.from(fileList).filter(f=>f.type.startsWith('image/')).slice(0,8);
+  let skipped = 0;
+  for(const file of files){
+    const budget = PHOTO_BUDGET - photosSize(pendingPhotos);
+    const dataUrl = await compressToFit(file, budget);
+    if(dataUrl){ pendingPhotos.push(dataUrl); renderThumbs(); }
+    else skipped++;
+  }
+  if(skipped) toast(skipped + ' photo(s) skipped — this piece is out of photo space. Remove one to add more.');
+}
+
+// Draws the image at `edge` px on its long edge (works for portrait and
+// landscape) and encodes it as JPEG at quality `q`.
+function renderJpeg(img, edge, q){
+  const scale = Math.min(1, edge / Math.max(img.width, img.height));
+  const w = Math.round(img.width * scale);
+  const h = Math.round(img.height * scale);
+  const canvas = document.createElement('canvas');
+  canvas.width = w; canvas.height = h;
+  const ctx = canvas.getContext('2d');
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL('image/jpeg', q);
+}
+
+function loadImageFromFile(file){
+  return new Promise((resolve, reject)=>{
+    const reader = new FileReader();
+    reader.onerror = reject;
+    reader.onload = e=>{
+      const img = new Image();
+      img.onerror = reject;
+      img.onload = ()=>resolve(img);
+      img.src = e.target.result;
+    };
+    reader.readAsDataURL(file);
   });
 }
 
+// Returns the sharpest version of the photo that fits in `budget` characters,
+// or null if even the smallest setting doesn't fit.
+async function compressToFit(file, budget){
+  let img;
+  try{ img = await loadImageFromFile(file); }catch(e){ return null; }
+  for(const step of PHOTO_STEPS){
+    const out = renderJpeg(img, step.edge, step.q);
+    if(out.length <= budget) return out;
+  }
+  return null;
+}
+
+// Kept for any older callers; uses the best-quality setting.
 function compressImage(file, cb){
-  const reader = new FileReader();
-  reader.onload = e=>{
-    const img = new Image();
-    img.onload = ()=>{
-      const maxW = 640;
-      const scale = Math.min(1, maxW / img.width);
-      const w = Math.round(img.width * scale);
-      const h = Math.round(img.height * scale);
-      const canvas = document.createElement('canvas');
-      canvas.width = w; canvas.height = h;
-      const ctx = canvas.getContext('2d');
-      ctx.drawImage(img, 0, 0, w, h);
-      cb(canvas.toDataURL('image/jpeg', 0.72));
-    };
-    img.src = e.target.result;
-  };
-  reader.readAsDataURL(file);
+  loadImageFromFile(file).then(img=>cb(renderJpeg(img, PHOTO_STEPS[0].edge, PHOTO_STEPS[0].q)));
 }
 
 function renderThumbs(){
@@ -1481,7 +1552,7 @@ function openItemModal(id, viaScan){
       ${isStaff ? '<button class="btn btn-brass small" id="printTagBtn">Print QR tag</button>' : ''}
       ${isStaff ? (item.status!=='sold' ? '<button class="btn btn-rust small" id="markSoldBtn">Mark sold</button>' : '<button class="btn btn-sage small" id="markAvailBtn">Mark available</button>') : ''}
       ${isStaff && item.status==='available' ? '<button class="btn btn-outline small" id="markReservedBtn">Mark reserved</button>' : ''}
-      ${isStaff ? '<button class="btn btn-outline small" id="deleteItemBtn">Delete</button>' : ''}
+      ${isStaff ? '<button class="btn btn-outline small" id="deleteItemBtn">Move to trash</button>' : ''}
     </div>
 
     ${isStaff ? `
@@ -1502,7 +1573,7 @@ function openItemModal(id, viaScan){
   const printBtn = document.getElementById('printTagBtn');
   if(printBtn) printBtn.addEventListener('click', ()=>openLabelModal(item));
   const deleteBtn = document.getElementById('deleteItemBtn');
-  if(deleteBtn) deleteBtn.addEventListener('click', ()=>deleteItem(item.id));
+  if(deleteBtn) deleteBtn.addEventListener('click', ()=>trashItem(item.id));
 
   wireItemDetails(id);
   if(isStaff) wireModalPhotos(item.id);
@@ -1645,11 +1716,19 @@ async function handleModalPhotoFiles(id, fileList){
   if(existing.length >= 8){ toast('This piece already has 8 photos — remove one before adding more'); return; }
   const room = 8 - existing.length;
   const filesToAdd = files.slice(0, room);
-  const newPhotos = await Promise.all(filesToAdd.map(compressImageAsync));
+  toast('Processing photo' + (filesToAdd.length>1 ? 's' : '') + '…');
+  const newPhotos = [];
+  let skipped = 0;
+  for(const f of filesToAdd){
+    const budget = PHOTO_BUDGET - photosSize(existing) - photosSize(newPhotos);
+    const out = await compressToFit(f, budget);
+    if(out) newPhotos.push(out); else skipped++;
+  }
+  if(!newPhotos.length){ toast('No room for more photos on this piece — remove one first'); return; }
   const photos = existing.concat(newPhotos);
   await withAuthRetry(()=> db.collection('items').doc(id).update({photos}));
   await refreshItem(id);
-  toast(newPhotos.length>1 ? 'Photos added' : 'Photo added');
+  toast(skipped ? (newPhotos.length + ' added, ' + skipped + ' skipped (out of space)') : (newPhotos.length>1 ? 'Photos added' : 'Photo added'));
   openItemModal(id, state.currentItemViaScan);
 }
 
@@ -1952,17 +2031,131 @@ async function updateStatus(id, status){
   openItemModal(id, state.currentItemViaScan);
 }
 
-async function deleteItem(id){
+// Soft delete: moves an item to the Trash tab instead of destroying it.
+// It stays in state.items (so refreshItem/history/pairing links keep
+// working) but is filtered out of the inventory grid and counts by
+// activeItems().
+async function trashItem(id){
   if(!requireStaff()) return;
-  if(!confirm('Delete this item permanently? This cannot be undone.')) return;
+  if(!confirm('Move this item to trash? You can restore it later from the Trash tab.')) return;
+  await withAuthRetry(()=> db.collection('items').doc(id).update({deleted:true, deletedAt: Date.now()}));
+  try{
+    await withAuthRetry(()=> privRef(id).set({
+      history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: 'Moved to trash'})
+    }, {merge:true}));
+  }catch(e){ /* non-fatal — history is best-effort */ }
+  document.getElementById('itemOverlay').classList.remove('active');
+  await refreshItem(id);
+  toast('Item moved to trash');
+}
+
+async function restoreItem(id){
+  if(!requireStaff()) return;
+  await withAuthRetry(()=> db.collection('items').doc(id).update({deleted:false}));
+  try{
+    await withAuthRetry(()=> privRef(id).set({
+      history: firebase.firestore.FieldValue.arrayUnion({ts: Date.now(), text: 'Restored from trash'})
+    }, {merge:true}));
+  }catch(e){ /* non-fatal */ }
+  await refreshItem(id);
+  renderTrash();
+  toast('Item restored');
+}
+
+async function hardDeleteItem(id){
+  if(!requireStaff()) return;
+  if(!confirm('Permanently delete this item? This cannot be undone.')) return;
   try{
     await withAuthRetry(()=> privRef(id).delete());
   }catch(e){ /* private doc may not be readable/exist in edge cases — ignore */ }
   await withAuthRetry(()=> db.collection('items').doc(id).delete());
   document.getElementById('itemOverlay').classList.remove('active');
   removeItemFromState(id);
-  toast('Item deleted');
+  renderTrash();
+  toast('Item permanently deleted');
 }
+
+/* ---------------- Trash tab ---------------- */
+async function renderTrash(){
+  if(!isStaff) return;
+  const loading = document.getElementById('loadingTrash');
+  const list = document.getElementById('trashList');
+  const empty = document.getElementById('trashEmptyState');
+  loading.style.display = 'block';
+  // Trash needs the complete inventory loaded, same as search — otherwise
+  // trashed items past the first page would look like they'd vanished.
+  await loadAllRemaining();
+  loading.style.display = 'none';
+
+  const trashed = state.items.filter(it=>it.deleted).sort((a,b)=>(b.deletedAt||0)-(a.deletedAt||0));
+  if(!trashed.length){
+    list.innerHTML = '';
+    empty.style.display = 'block';
+    return;
+  }
+  empty.style.display = 'none';
+  list.innerHTML = trashed.map(it=>`
+    <div class="loc-row">
+      <div>
+        <div class="loc-name">${esc(it.name || 'Untitled piece')}</div>
+        <div class="loc-count">${esc(it.id)} &nbsp;·&nbsp; Trashed ${it.deletedAt ? new Date(it.deletedAt).toLocaleDateString() : ''}</div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-sage small" data-restore="${esc(it.id)}">Restore</button>
+        <button class="btn btn-rust small" data-harddelete="${esc(it.id)}">Delete permanently</button>
+      </div>
+    </div>`).join('');
+  list.querySelectorAll('button[data-restore]').forEach(b=>{
+    b.addEventListener('click', ()=>restoreItem(b.dataset.restore));
+  });
+  list.querySelectorAll('button[data-harddelete]').forEach(b=>{
+    b.addEventListener('click', ()=>hardDeleteItem(b.dataset.harddelete));
+  });
+}
+
+/* ---------------- CSV export ---------------- */
+function csvCell(v){
+  const s = String(v==null ? '' : v);
+  return /[",\n\r]/.test(s) ? '"' + s.replace(/"/g,'""') + '"' : s;
+}
+
+async function exportInventoryCsv(){
+  if(!requireStaff()) return;
+  toast('Preparing CSV…');
+  await loadAllRemaining();
+  const cols = ['ID','Name','Category','Price','Status','Location','Tags','Materials','Period / Style','Dimensions','Provenance / Maker','Condition','Description','Created'];
+  const rows = [cols];
+  activeItems().forEach(it=>{
+    rows.push([
+      it.id,
+      it.name || '',
+      it.category || '',
+      it.price || '',
+      it.status || '',
+      it.location || '',
+      (it.tags||[]).join('; '),
+      it.materials || '',
+      it.period || '',
+      it.dimensions || '',
+      it.provenance || '',
+      it.condition || '',
+      it.description || '',
+      it.createdAt ? new Date(it.createdAt).toLocaleDateString() : ''
+    ]);
+  });
+  const csv = rows.map(r=>r.map(csvCell).join(',')).join('\r\n');
+  const blob = new Blob(['﻿' + csv], {type:'text/csv;charset=utf-8;'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'nm-inventory-' + new Date().toISOString().slice(0,10) + '.csv';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(()=>URL.revokeObjectURL(url), 2000);
+  toast('CSV downloaded');
+}
+document.getElementById('exportCsvBtn').addEventListener('click', exportInventoryCsv);
 
 /* ---------------- QR label ---------------- */
 function fitNameStyle(name){
@@ -2072,7 +2265,7 @@ window.addEventListener('afterprint', ()=>{
 /* ---------------- Locations ---------------- */
 function renderLocations(){
   const counts = {};
-  state.items.forEach(it=>{ counts[it.location] = (counts[it.location]||0)+1; });
+  activeItems().forEach(it=>{ counts[it.location] = (counts[it.location]||0)+1; });
   const holder = document.getElementById('locList');
   holder.innerHTML = state.locations.map(l=>`
     <div class="loc-row">
