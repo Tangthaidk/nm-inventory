@@ -478,9 +478,9 @@
     </div>
     <nav class="tabs">
       <button data-tab="inventory" class="active">Inventory</button>
-      <button data-tab="add">Add Item</button>
-      <button data-tab="scan">Scan</button>
-      <button data-tab="locations">Locations</button>
+      <button data-tab="add" data-staff-tab="1">Add Item</button>
+      <button data-tab="scan" data-staff-tab="1">Scan</button>
+      <button data-tab="locations" data-staff-tab="1">Locations</button>
       <button data-tab="trash" id="trashTabBtn" style="display:none;">Trash</button>
     </nav>
     <div class="auth-area">
@@ -939,7 +939,8 @@ function applyAuthGating(){
   document.getElementById('selectModeBtn').style.display = (isStaff && !state.selectMode) ? '' : 'none';
   document.getElementById('exportCsvBtn').style.display = isStaff ? '' : 'none';
   document.getElementById('trashTabBtn').style.display = isStaff ? '' : 'none';
-  if(!isStaff && state.activeTab === 'trash'){ switchTab('inventory'); }
+  document.querySelectorAll('nav.tabs button[data-staff-tab]').forEach(b=>{ b.style.display = isStaff ? '' : 'none'; });
+  if(!isStaff && state.activeTab !== 'inventory'){ switchTab('inventory'); }
   renderLocations();
   renderGrid();
   if(state.currentItemId && document.getElementById('itemOverlay').classList.contains('active')){
